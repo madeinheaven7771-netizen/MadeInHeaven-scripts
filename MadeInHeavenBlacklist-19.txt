@@ -1,0 +1,912 @@
+================================================================
+  MadeInHeaven's Blacklist - FULL WORKING SYSTEM
+  3 files to set up:
+  
+  1. ServerScript  → ServerScriptService/BlacklistServer
+  2. LocalScript   → StarterPlayerScripts/BlacklistUI
+  3. RemoteEvents  → ReplicatedStorage (created automatically)
+================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE 1 — ServerScriptService > BlacklistServer (Script)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+-- BlacklistServer (Script inside ServerScriptService)
+
+local Players         = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- ── RemoteEvents setup ──────────────────────────────────────
+local Remotes = Instance.new("Folder")
+Remotes.Name  = "MIH_Remotes"
+Remotes.Parent = ReplicatedStorage
+
+local RE_Execute  = Instance.new("RemoteEvent")
+RE_Execute.Name   = "ExecuteBlacklist"
+RE_Execute.Parent = Remotes
+
+local RE_Sync     = Instance.new("RemoteEvent")
+RE_Sync.Name      = "SyncBlacklist"
+RE_Sync.Parent    = Remotes
+
+-- ── Config ──────────────────────────────────────────────────
+local TOOL_NAME = "The Arkenstone"
+local ADMINS = {
+    -- Put your UserId(s) here so only you can use this:
+    -- [1234567] = true,
+}
+-- Set to true to allow anyone, false to restrict to ADMINS table
+local ALLOW_ALL = true
+
+-- ── State ────────────────────────────────────────────────────
+local blacklist   = {}   -- { [username] = true }
+local modeState   = { mode = "Default", customCmds = {} }
+
+-- ── Helper: is caller authorised ────────────────────────────
+local function isAdmin(player)
+    if ALLOW_ALL then return true end
+    return ADMINS[player.UserId] == true
+end
+
+-- ── Helper: give tool to a player ───────────────────────────
+local function giveArkenstone(player)
+    local char = player.Character
+    local bp   = player:FindFirstChild("Backpack")
+    if not bp and not char then return end
+
+    -- Remove duplicates first
+    for _, v in ipairs(bp and bp:GetChildren() or {}) do
+        if v.Name == TOOL_NAME then v:Destroy() end
+    end
+    if char then
+        for _, v in ipairs(char:GetChildren()) do
+            if v.Name == TOOL_NAME then v:Destroy() end
+        end
+    end
+
+    local tool = Instance.new("Tool")
+    tool.Name           = TOOL_NAME
+    tool.RequiresHandle = false
+    tool.CanBeDropped   = false
+
+    -- Visual handle (glowing gem look)
+    local handle = Instance.new("Part")
+    handle.Name      = "Handle"
+    handle.Size      = Vector3.new(0.8, 0.8, 0.8)
+    handle.BrickColor = BrickColor.new("Bright yellow")
+    handle.Material  = Enum.Material.Neon
+    handle.Parent    = tool
+
+    tool.Parent = bp or char
+end
+
+-- ── Helper: run commands on a player ────────────────────────
+local function runCommands(target, commands)
+    for _, cmd in ipairs(commands) do
+        local msg = cmd .. " " .. target.Name
+        -- Broadcast command text to all clients (shows in their output / can hook to admin)
+        RE_Sync:FireAllClients("CMD", msg)
+        -- Built-in effects:
+        local char = target.Character
+        if char then
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+
+            local cmdLower = cmd:lower()
+
+            if cmdLower == "freeze" then
+                if hrp then
+                    hrp.Anchored = true
+                end
+
+            elseif cmdLower == "unfreeze" then
+                if hrp then
+                    hrp.Anchored = false
+                end
+
+            elseif cmdLower == "mute" then
+                -- Mute via chat tag / property
+                local success = pcall(function()
+                    game:GetService("Chat"):SetSpeakerExtraData(target.Name, "Muted", true)
+                end)
+                -- Fallback: set a value others can read
+                local muteVal = target:FindFirstChild("MIH_Muted") or Instance.new("BoolValue")
+                muteVal.Name   = "MIH_Muted"
+                muteVal.Value  = true
+                muteVal.Parent = target
+
+            elseif cmdLower == "glitch" then
+                -- Rapidly teleport slightly to create glitch effect
+                if hrp then
+                    task.spawn(function()
+                        for i = 1, 20 do
+                            hrp.CFrame = hrp.CFrame * CFrame.new(
+                                math.random(-3, 3),
+                                math.random(0, 2),
+                                math.random(-3, 3)
+                            )
+                            task.wait(0.05)
+                        end
+                    end)
+                end
+
+            elseif cmdLower == "blind" then
+                -- Fire to client to apply blur
+                RE_Sync:FireClient(target, "BLIND", true)
+
+            elseif cmdLower == "unblind" then
+                RE_Sync:FireClient(target, "BLIND", false)
+
+            elseif cmdLower == "kill" then
+                if hum then hum.Health = 0 end
+
+            elseif cmdLower == "kick" then
+                target:Kick("You have been removed from this server.")
+
+            else
+                -- Custom / unknown command: just log and fire to all admins
+                RE_Sync:FireAllClients("CMD", "[Custom] " .. msg)
+            end
+        end
+    end
+end
+
+-- ── Main remote handler ──────────────────────────────────────
+RE_Execute.OnServerEvent:Connect(function(sender, action, data)
+    if not isAdmin(sender) then return end
+
+    if action == "ADD" then
+        -- data = { username = string }
+        local username = tostring(data.username)
+        blacklist[username] = true
+        -- If they're already in the server, act now
+        local target = Players:FindFirstChild(username)
+        if target then
+            giveArkenstone(target)
+            local cmds = modeState.mode == "Default"
+                and {"Freeze", "Mute", "Glitch", "Blind"}
+                or modeState.customCmds
+            runCommands(target, cmds)
+        end
+        RE_Sync:FireAllClients("LIST", blacklist)
+
+    elseif action == "REMOVE" then
+        local username = tostring(data.username)
+        blacklist[username] = nil
+        RE_Sync:FireAllClients("LIST", blacklist)
+
+    elseif action == "SET_MODE" then
+        modeState.mode       = data.mode
+        modeState.customCmds = data.customCmds or {}
+
+    elseif action == "EXECUTE_NOW" then
+        -- data = { username = string }
+        local target = Players:FindFirstChild(tostring(data.username))
+        if target then
+            giveArkenstone(target)
+            local cmds = modeState.mode == "Default"
+                and {"Freeze", "Mute", "Glitch", "Blind"}
+                or modeState.customCmds
+            runCommands(target, cmds)
+        end
+    end
+end)
+
+-- ── Auto-act when blacklisted player joins ───────────────────
+Players.PlayerAdded:Connect(function(player)
+    if blacklist[player.Name] then
+        task.wait(2) -- wait for character to load
+        if not player or not player.Parent then return end
+        giveArkenstone(player)
+        local cmds = modeState.mode == "Default"
+            and {"Freeze", "Mute", "Glitch", "Blind"}
+            or modeState.customCmds
+        runCommands(player, cmds)
+    end
+end)
+
+print("[MIH Blacklist] Server loaded.")
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE 2 — StarterPlayerScripts > BlacklistUI (LocalScript)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+-- BlacklistUI (LocalScript inside StarterPlayerScripts)
+
+local Players           = game:GetService("Players")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer       = Players.LocalPlayer
+
+-- Wait for remotes
+local Remotes    = ReplicatedStorage:WaitForChild("MIH_Remotes", 10)
+local RE_Execute = Remotes:WaitForChild("ExecuteBlacklist", 10)
+local RE_Sync    = Remotes:WaitForChild("SyncBlacklist", 10)
+
+if not RE_Execute or not RE_Sync then
+    warn("[MIH Blacklist] Remotes not found. Is the server script running?")
+    return
+end
+
+-- ── Colors ───────────────────────────────────────────────────
+local C = {
+    BG      = Color3.fromRGB(255, 252, 218),
+    BGAlt   = Color3.fromRGB(250, 244, 195),
+    Accent  = Color3.fromRGB(242, 208, 48),
+    AccentD = Color3.fromRGB(210, 178, 20),
+    Border  = Color3.fromRGB(230, 205, 90),
+    Text    = Color3.fromRGB(70, 55, 10),
+    Muted   = Color3.fromRGB(170, 148, 70),
+    Red     = Color3.fromRGB(232, 90, 82),
+    RedD    = Color3.fromRGB(200, 65, 58),
+    Green   = Color3.fromRGB(88, 192, 118),
+    White   = Color3.fromRGB(255, 255, 255),
+    TagBG   = Color3.fromRGB(255, 244, 170),
+    RowEven = Color3.fromRGB(255, 250, 205),
+}
+
+-- ── State ────────────────────────────────────────────────────
+local State = {
+    Enabled  = false,
+    Mode     = "Default",
+    Blacklisted  = {},
+    CustomCmds   = {},
+    UIVisible    = true,
+}
+
+-- ── Utility ──────────────────────────────────────────────────
+local function Corner(p, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 8)
+    c.Parent = p
+    return c
+end
+
+local function Stroke(p, col, t)
+    local s = Instance.new("UIStroke")
+    s.Color = col or C.Border
+    s.Thickness = t or 1.5
+    s.Parent = s
+    s.Parent = p
+    return s
+end
+
+local function Tween(obj, props, t, style)
+    TweenService:Create(obj,
+        TweenInfo.new(t or 0.18, style or Enum.EasingStyle.Quad),
+        props
+    ):Play()
+end
+
+local function Hover(btn, n, h)
+    btn.MouseEnter:Connect(function()  Tween(btn, {BackgroundColor3 = h}, 0.1) end)
+    btn.MouseLeave:Connect(function()  Tween(btn, {BackgroundColor3 = n}, 0.1) end)
+end
+
+local function MakeDraggable(frame, handle)
+    local drag, ds, sp = false, nil, nil
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            drag = true
+            ds   = i.Position
+            sp   = frame.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = i.Position - ds
+            frame.Position = UDim2.new(
+                sp.X.Scale, sp.X.Offset + d.X,
+                sp.Y.Scale, sp.Y.Offset + d.Y
+            )
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            drag = false
+        end
+    end)
+end
+
+local function NewLabel(parent, txt, size, font, xalign, color, zi)
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1
+    l.Text           = txt
+    l.TextSize       = size   or 12
+    l.Font           = font   or Enum.Font.Gotham
+    l.TextXAlignment = xalign or Enum.TextXAlignment.Left
+    l.TextColor3     = color  or C.Text
+    l.ZIndex         = zi     or 12
+    l.Parent         = parent
+    return l
+end
+
+local function NewButton(parent, txt, size, font, bgCol, txtCol, zi)
+    local b = Instance.new("TextButton")
+    b.BackgroundColor3 = bgCol  or C.Accent
+    b.Text             = txt
+    b.TextSize         = size   or 12
+    b.Font             = font   or Enum.Font.GothamBold
+    b.TextColor3       = txtCol or C.Text
+    b.ZIndex           = zi     or 14
+    b.AutoButtonColor  = false
+    b.Parent           = parent
+    return b
+end
+
+-- ── GUI Root ─────────────────────────────────────────────────
+local SG = Instance.new("ScreenGui")
+SG.Name            = "MIHBlacklist"
+SG.ResetOnSpawn    = false
+SG.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+SG.DisplayOrder    = 99
+SG.Parent          = LocalPlayer.PlayerGui
+
+-- ── Mini Button ──────────────────────────────────────────────
+local Mini = NewButton(SG, "✦", 18, Enum.Font.GothamBold, C.Accent, C.Text, 50)
+Mini.Size     = UDim2.new(0, 38, 0, 38)
+Mini.Position = UDim2.new(0, 16, 0.5, -19)
+Mini.Visible  = false
+Corner(Mini, 11)
+Stroke(Mini, C.Border, 2)
+MakeDraggable(Mini, Mini)
+Hover(Mini, C.Accent, C.AccentD)
+
+-- ── Main Frame ───────────────────────────────────────────────
+local Main = Instance.new("Frame")
+Main.Size            = UDim2.new(0, 308, 0, 420)
+Main.Position        = UDim2.new(0.5, -154, 0.5, -210)
+Main.BackgroundColor3 = C.BG
+Main.BorderSizePixel = 0
+Main.ZIndex          = 10
+Main.Parent          = SG
+Corner(Main, 13)
+Stroke(Main, C.Border, 2)
+
+-- ── Title Bar ────────────────────────────────────────────────
+local TBar = Instance.new("Frame")
+TBar.Size             = UDim2.new(1, 0, 0, 40)
+TBar.BackgroundColor3 = C.Accent
+TBar.BorderSizePixel  = 0
+TBar.ZIndex           = 11
+TBar.Parent           = Main
+Corner(TBar, 13)
+
+-- flat bottom on title bar
+local TFill = Instance.new("Frame")
+TFill.Size             = UDim2.new(1, 0, 0.5, 1)
+TFill.Position         = UDim2.new(0, 0, 0.5, 0)
+TFill.BackgroundColor3 = C.Accent
+TFill.BorderSizePixel  = 0
+TFill.ZIndex           = 11
+TFill.Parent           = TBar
+
+local TIcon = NewLabel(TBar, "✦", 14, Enum.Font.GothamBold, Enum.TextXAlignment.Center, C.Text, 12)
+TIcon.Size     = UDim2.new(0, 26, 1, 0)
+TIcon.Position = UDim2.new(0, 9, 0, 0)
+
+local TTitle = NewLabel(TBar, "MadeInHeaven's Blacklist", 12, Enum.Font.GothamBold, Enum.TextXAlignment.Left, C.Text, 12)
+TTitle.Size     = UDim2.new(1, -72, 1, 0)
+TTitle.Position = UDim2.new(0, 36, 0, 0)
+
+local HideBtn = NewButton(TBar, "—", 11, Enum.Font.GothamBold, C.AccentD, C.Text, 13)
+HideBtn.Size     = UDim2.new(0, 26, 0, 26)
+HideBtn.Position = UDim2.new(1, -32, 0.5, -13)
+Corner(HideBtn, 7)
+Hover(HideBtn, C.AccentD, C.Accent)
+
+MakeDraggable(Main, TBar)
+
+-- ── Scrolling Body ───────────────────────────────────────────
+-- Everything lives inside a ScrollingFrame so the whole UI scrolls
+
+local BodyScroll = Instance.new("ScrollingFrame")
+BodyScroll.Size                 = UDim2.new(1, -14, 1, -48)
+BodyScroll.Position             = UDim2.new(0, 7, 0, 44)
+BodyScroll.BackgroundTransparency = 1
+BodyScroll.BorderSizePixel      = 0
+BodyScroll.ScrollBarThickness   = 3
+BodyScroll.ScrollBarImageColor3 = C.Accent
+BodyScroll.CanvasSize           = UDim2.new(0, 0, 0, 0)
+BodyScroll.AutomaticCanvasSize  = Enum.AutomaticSize.Y
+BodyScroll.ZIndex               = 11
+BodyScroll.Parent               = Main
+
+local BodyLayout = Instance.new("UIListLayout")
+BodyLayout.Padding      = UDim.new(0, 5)
+BodyLayout.SortOrder    = Enum.SortOrder.LayoutOrder
+BodyLayout.Parent       = BodyScroll
+
+local BodyPad = Instance.new("UIPadding")
+BodyPad.PaddingBottom = UDim.new(0, 6)
+BodyPad.Parent = BodyScroll
+
+-- Row factory
+local function Row(h, order)
+    local f = Instance.new("Frame")
+    f.Size             = UDim2.new(1, 0, 0, h)
+    f.BackgroundColor3 = C.BGAlt
+    f.BorderSizePixel  = 0
+    f.LayoutOrder      = order or 0
+    f.ZIndex           = 12
+    f.Parent           = BodyScroll
+    Corner(f, 8)
+    Stroke(f, C.Border, 1)
+    return f
+end
+
+-- ── ROW 1: Blacklist ON/OFF ───────────────────────────────────
+local R1 = Row(38, 1)
+
+local EnLbl = NewLabel(R1, "Blacklist Active", 12, Enum.Font.GothamSemibold, Enum.TextXAlignment.Left, C.Text, 13)
+EnLbl.Size     = UDim2.new(0.58, 0, 1, 0)
+EnLbl.Position = UDim2.new(0, 10, 0, 0)
+
+local TogBtn = NewButton(R1, "OFF", 11, Enum.Font.GothamBold, C.Red, C.White, 14)
+TogBtn.Size     = UDim2.new(0, 60, 0, 24)
+TogBtn.Position = UDim2.new(1, -68, 0.5, -12)
+Corner(TogBtn, 7)
+Hover(TogBtn, C.Red, C.RedD)
+
+-- ── ROW 2: Mode ──────────────────────────────────────────────
+local R2 = Row(38, 2)
+
+local ModeLbl = NewLabel(R2, "Mode:", 12, Enum.Font.GothamSemibold, Enum.TextXAlignment.Left, C.Text, 13)
+ModeLbl.Size     = UDim2.new(0.28, 0, 1, 0)
+ModeLbl.Position = UDim2.new(0, 10, 0, 0)
+
+local BtnDef = NewButton(R2, "Default", 11, Enum.Font.GothamBold, C.Accent, C.Text, 14)
+BtnDef.Size     = UDim2.new(0, 78, 0, 24)
+BtnDef.Position = UDim2.new(0.28, 4, 0.5, -12)
+Corner(BtnDef, 7)
+Stroke(BtnDef, C.AccentD, 1.5)
+
+local BtnCust = NewButton(R2, "Custom", 11, Enum.Font.GothamBold, C.BGAlt, C.Muted, 14)
+BtnCust.Size     = UDim2.new(0, 78, 0, 24)
+BtnCust.Position = UDim2.new(1, -86, 0.5, -12)
+Corner(BtnCust, 7)
+Stroke(BtnCust, C.Border, 1)
+
+-- ── ROW 3: Custom Commands Panel ─────────────────────────────
+local R3 = Instance.new("Frame")
+R3.Size             = UDim2.new(1, 0, 0, 0)
+R3.BackgroundColor3 = C.BGAlt
+R3.BorderSizePixel  = 0
+R3.LayoutOrder      = 3
+R3.ClipsDescendants = true
+R3.ZIndex           = 12
+R3.Visible          = false
+R3.Parent           = BodyScroll
+Corner(R3, 8)
+Stroke(R3, C.Border, 1)
+
+local CmdHdr = NewLabel(R3, "Custom Commands  (max 10)", 10, Enum.Font.GothamSemibold, Enum.TextXAlignment.Left, C.Muted, 13)
+CmdHdr.Size     = UDim2.new(1, 0, 0, 20)
+CmdHdr.Position = UDim2.new(0, 10, 0, 3)
+
+local CInputBG = Instance.new("Frame")
+CInputBG.Size             = UDim2.new(1, -14, 0, 28)
+CInputBG.Position         = UDim2.new(0, 7, 0, 26)
+CInputBG.BackgroundColor3 = C.BG
+CInputBG.BorderSizePixel  = 0
+CInputBG.ZIndex           = 13
+CInputBG.Parent           = R3
+Corner(CInputBG, 7)
+Stroke(CInputBG, C.Border, 1)
+
+local CmdInput = Instance.new("TextBox")
+CmdInput.Size                = UDim2.new(1, -58, 1, 0)
+CmdInput.Position            = UDim2.new(0, 8, 0, 0)
+CmdInput.BackgroundTransparency = 1
+CmdInput.Text                = ""
+CmdInput.PlaceholderText     = "e.g. myopic"
+CmdInput.PlaceholderColor3   = C.Muted
+CmdInput.TextColor3          = C.Text
+CmdInput.TextSize            = 11
+CmdInput.Font                = Enum.Font.Gotham
+CmdInput.TextXAlignment      = Enum.TextXAlignment.Left
+CmdInput.ZIndex              = 14
+CmdInput.ClearTextOnFocus    = false
+CmdInput.Parent              = CInputBG
+
+local AddCmdBtn = NewButton(CInputBG, "+Add", 10, Enum.Font.GothamBold, C.Accent, C.Text, 14)
+AddCmdBtn.Size     = UDim2.new(0, 46, 0.82, 0)
+AddCmdBtn.Position = UDim2.new(1, -50, 0.09, 0)
+Corner(AddCmdBtn, 6)
+Hover(AddCmdBtn, C.Accent, C.AccentD)
+
+-- Tag list inside R3
+local TagScroll = Instance.new("ScrollingFrame")
+TagScroll.Size                 = UDim2.new(1, -14, 0, 54)
+TagScroll.Position             = UDim2.new(0, 7, 0, 58)
+TagScroll.BackgroundTransparency = 1
+TagScroll.BorderSizePixel      = 0
+TagScroll.ScrollBarThickness   = 2
+TagScroll.ScrollBarImageColor3 = C.Accent
+TagScroll.CanvasSize           = UDim2.new(0, 0, 0, 0)
+TagScroll.ZIndex               = 13
+TagScroll.Parent               = R3
+
+local TagLayout = Instance.new("UIListLayout")
+TagLayout.FillDirection = Enum.FillDirection.Horizontal
+TagLayout.Wraps         = true
+TagLayout.Padding       = UDim.new(0, 4)
+TagLayout.Parent        = TagScroll
+
+-- ── ROW 4: Add Player ────────────────────────────────────────
+local R4 = Row(40, 4)
+
+local PlrLbl = NewLabel(R4, "Add:", 11, Enum.Font.GothamSemibold, Enum.TextXAlignment.Left, C.Muted, 13)
+PlrLbl.Size     = UDim2.new(0, 30, 1, 0)
+PlrLbl.Position = UDim2.new(0, 8, 0, 0)
+
+local PlrInputBG = Instance.new("Frame")
+PlrInputBG.Size             = UDim2.new(0.52, 0, 0, 26)
+PlrInputBG.Position         = UDim2.new(0, 42, 0.5, -13)
+PlrInputBG.BackgroundColor3 = C.BG
+PlrInputBG.BorderSizePixel  = 0
+PlrInputBG.ZIndex           = 13
+PlrInputBG.Parent           = R4
+Corner(PlrInputBG, 7)
+Stroke(PlrInputBG, C.Border, 1)
+
+local PlrInput = Instance.new("TextBox")
+PlrInput.Size                = UDim2.new(1, -8, 1, 0)
+PlrInput.Position            = UDim2.new(0, 7, 0, 0)
+PlrInput.BackgroundTransparency = 1
+PlrInput.Text                = ""
+PlrInput.PlaceholderText     = "Username..."
+PlrInput.PlaceholderColor3   = C.Muted
+PlrInput.TextColor3          = C.Text
+PlrInput.TextSize            = 11
+PlrInput.Font                = Enum.Font.Gotham
+PlrInput.TextXAlignment      = Enum.TextXAlignment.Left
+PlrInput.ZIndex              = 14
+PlrInput.ClearTextOnFocus    = false
+PlrInput.Parent              = PlrInputBG
+
+local AddPlrBtn = NewButton(R4, "Blacklist", 11, Enum.Font.GothamBold, C.Red, C.White, 14)
+AddPlrBtn.Size     = UDim2.new(0, 76, 0, 26)
+AddPlrBtn.Position = UDim2.new(1, -82, 0.5, -13)
+Corner(AddPlrBtn, 7)
+Hover(AddPlrBtn, C.Red, C.RedD)
+
+-- ── ROW 5: List header ───────────────────────────────────────
+local R5 = Instance.new("Frame")
+R5.Size             = UDim2.new(1, 0, 0, 20)
+R5.BackgroundTransparency = 1
+R5.LayoutOrder      = 5
+R5.ZIndex           = 12
+R5.Parent           = BodyScroll
+
+local ListHdr = NewLabel(R5, "Server Blacklist", 11, Enum.Font.GothamBold, Enum.TextXAlignment.Left, C.Muted, 13)
+ListHdr.Size = UDim2.new(0.6, 0, 1, 0)
+
+local CountLbl = NewLabel(R5, "0 players", 10, Enum.Font.Gotham, Enum.TextXAlignment.Right, C.Muted, 13)
+CountLbl.Size     = UDim2.new(0.4, 0, 1, 0)
+CountLbl.Position = UDim2.new(0.6, 0, 0, 0)
+
+-- ── ROW 6: Blacklist Scroll ──────────────────────────────────
+local R6 = Row(168, 6)
+
+local ListScroll = Instance.new("ScrollingFrame")
+ListScroll.Size                 = UDim2.new(1, -8, 1, -6)
+ListScroll.Position             = UDim2.new(0, 4, 0, 3)
+ListScroll.BackgroundTransparency = 1
+ListScroll.BorderSizePixel      = 0
+ListScroll.ScrollBarThickness   = 4
+ListScroll.ScrollBarImageColor3 = C.Accent
+ListScroll.CanvasSize           = UDim2.new(0, 0, 0, 0)
+ListScroll.ZIndex               = 13
+ListScroll.Parent               = R6
+
+local ListLayout = Instance.new("UIListLayout")
+ListLayout.Padding   = UDim.new(0, 3)
+ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ListLayout.Parent    = ListScroll
+
+local EmptyLbl = NewLabel(ListScroll, "No players blacklisted.", 11, Enum.Font.Gotham, Enum.TextXAlignment.Center, C.Muted, 14)
+EmptyLbl.Size = UDim2.new(1, 0, 0, 32)
+
+-- ── ROW 7: Status ────────────────────────────────────────────
+local R7 = Instance.new("Frame")
+R7.Size             = UDim2.new(1, 0, 0, 18)
+R7.BackgroundTransparency = 1
+R7.LayoutOrder      = 7
+R7.ZIndex           = 12
+R7.Parent           = BodyScroll
+
+local StatusLbl = NewLabel(R7, "Ready.", 10, Enum.Font.Gotham, Enum.TextXAlignment.Left, C.Muted, 13)
+StatusLbl.Size = UDim2.new(1, 0, 1, 0)
+
+-- ── Functions ────────────────────────────────────────────────
+local function SetStatus(msg, col)
+    StatusLbl.Text       = msg
+    StatusLbl.TextColor3 = col or C.Muted
+end
+
+local function SyncModeToServer()
+    RE_Execute:FireServer("SET_MODE", {
+        mode       = State.Mode,
+        customCmds = State.CustomCmds,
+    })
+end
+
+local function RefreshTags()
+    for _, c in ipairs(TagScroll:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    for _, cmd in ipairs(State.CustomCmds) do
+        local Tag = Instance.new("Frame")
+        Tag.Size             = UDim2.new(0, 0, 0, 22)
+        Tag.AutomaticSize    = Enum.AutomaticSize.X
+        Tag.BackgroundColor3 = C.TagBG
+        Tag.BorderSizePixel  = 0
+        Tag.ZIndex           = 14
+        Tag.Parent           = TagScroll
+        Corner(Tag, 5)
+        Stroke(Tag, C.Accent, 1)
+
+        local Pad = Instance.new("UIPadding")
+        Pad.PaddingLeft  = UDim.new(0, 6)
+        Pad.PaddingRight = UDim.new(0, 20)
+        Pad.Parent = Tag
+
+        local TLbl = NewLabel(Tag, cmd, 10, Enum.Font.GothamSemibold, Enum.TextXAlignment.Left, C.Text, 15)
+        TLbl.Size         = UDim2.new(0, 0, 1, 0)
+        TLbl.AutomaticSize = Enum.AutomaticSize.X
+
+        local Del = NewButton(Tag, "✕", 8, Enum.Font.GothamBold, Color3.new(0,0,0), C.Muted, 16)
+        Del.Size             = UDim2.new(0, 14, 0, 14)
+        Del.Position         = UDim2.new(1, -17, 0.5, -7)
+        Del.BackgroundTransparency = 1
+
+        local cap = cmd
+        Del.MouseButton1Click:Connect(function()
+            for i, v in ipairs(State.CustomCmds) do
+                if v == cap then table.remove(State.CustomCmds, i) break end
+            end
+            RefreshTags()
+            SyncModeToServer()
+        end)
+    end
+    TagScroll.CanvasSize = UDim2.new(0, 0, 0, math.ceil(#State.CustomCmds / 4) * 26)
+end
+
+local function RefreshList()
+    for _, c in ipairs(ListScroll:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+
+    local n = 0
+    for _ in pairs(State.Blacklisted) do n = n + 1 end
+    CountLbl.Text = n .. (n == 1 and " player" or " players")
+
+    if n == 0 then
+        EmptyLbl.Visible     = true
+        ListScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+        return
+    end
+    EmptyLbl.Visible = false
+
+    local order = 0
+    for username in pairs(State.Blacklisted) do
+        order = order + 1
+
+        local Rw = Instance.new("Frame")
+        Rw.Size             = UDim2.new(1, -4, 0, 30)
+        Rw.BackgroundColor3 = (order % 2 == 0) and C.RowEven or C.BG
+        Rw.BorderSizePixel  = 0
+        Rw.LayoutOrder      = order
+        Rw.ZIndex           = 14
+        Rw.Parent           = ListScroll
+        Corner(Rw, 6)
+
+        local Dot = Instance.new("Frame")
+        Dot.Size             = UDim2.new(0, 7, 0, 7)
+        Dot.Position         = UDim2.new(0, 9, 0.5, -3.5)
+        Dot.BackgroundColor3 = C.Red
+        Dot.BorderSizePixel  = 0
+        Dot.ZIndex           = 15
+        Dot.Parent           = Rw
+        Corner(Dot, 3)
+
+        local NLbl = NewLabel(Rw, username, 11, Enum.Font.GothamSemibold, Enum.TextXAlignment.Left, C.Text, 15)
+        NLbl.Size     = UDim2.new(0.55, 0, 1, 0)
+        NLbl.Position = UDim2.new(0, 22, 0, 0)
+
+        -- Execute now button
+        local ExBtn = NewButton(Rw, "▶", 10, Enum.Font.GothamBold, C.Accent, C.Text, 15)
+        ExBtn.Size     = UDim2.new(0, 24, 0, 20)
+        ExBtn.Position = UDim2.new(1, -82, 0.5, -10)
+        Corner(ExBtn, 5)
+        Hover(ExBtn, C.Accent, C.AccentD)
+
+        local RmBtn = NewButton(Rw, "Remove", 9, Enum.Font.GothamBold, C.Red, C.White, 15)
+        RmBtn.Size     = UDim2.new(0, 52, 0, 20)
+        RmBtn.Position = UDim2.new(1, -56, 0.5, -10)
+        Corner(RmBtn, 5)
+        Hover(RmBtn, C.Red, C.RedD)
+
+        local cap = username
+        ExBtn.MouseButton1Click:Connect(function()
+            RE_Execute:FireServer("EXECUTE_NOW", { username = cap })
+            SetStatus("Executed on: " .. cap, C.Red)
+        end)
+        RmBtn.MouseButton1Click:Connect(function()
+            RE_Execute:FireServer("REMOVE", { username = cap })
+            State.Blacklisted[cap] = nil
+            RefreshList()
+            SetStatus("Removed: " .. cap, C.Green)
+        end)
+    end
+
+    ListScroll.CanvasSize = UDim2.new(0, 0, 0, n * 33 + 4)
+end
+
+-- ── Mode switch ──────────────────────────────────────────────
+local function SetMode(mode)
+    State.Mode = mode
+    if mode == "Default" then
+        BtnDef.BackgroundColor3  = C.Accent
+        BtnDef.TextColor3        = C.Text
+        BtnCust.BackgroundColor3 = C.BGAlt
+        BtnCust.TextColor3       = C.Muted
+        R3.Visible = false
+        R3.Size    = UDim2.new(1, 0, 0, 0)
+        SetStatus("Mode: Default", C.Muted)
+    else
+        BtnCust.BackgroundColor3 = C.Accent
+        BtnCust.TextColor3       = C.Text
+        BtnDef.BackgroundColor3  = C.BGAlt
+        BtnDef.TextColor3        = C.Muted
+        R3.Visible = true
+        R3.Size    = UDim2.new(1, 0, 0, 118)
+        RefreshTags()
+        SetStatus("Mode: Custom", C.Muted)
+    end
+    SyncModeToServer()
+end
+
+BtnDef.MouseButton1Click:Connect(function()  SetMode("Default") end)
+BtnCust.MouseButton1Click:Connect(function() SetMode("Custom")  end)
+
+-- ── Add custom command ───────────────────────────────────────
+AddCmdBtn.MouseButton1Click:Connect(function()
+    local cmd = CmdInput.Text:match("^%s*(.-)%s*$")
+    if cmd == "" then return end
+    if #State.CustomCmds >= 10 then
+        SetStatus("Max 10 commands!", C.Red) return
+    end
+    for _, v in ipairs(State.CustomCmds) do
+        if v:lower() == cmd:lower() then
+            SetStatus("Already added.", C.Red) return
+        end
+    end
+    table.insert(State.CustomCmds, cmd)
+    CmdInput.Text = ""
+    RefreshTags()
+    SyncModeToServer()
+    SetStatus("Added cmd: " .. cmd, C.Green)
+end)
+
+-- ── Toggle blacklist ─────────────────────────────────────────
+TogBtn.MouseButton1Click:Connect(function()
+    State.Enabled = not State.Enabled
+    if State.Enabled then
+        TogBtn.BackgroundColor3 = C.Green
+        TogBtn.Text             = "ON"
+        SetStatus("Blacklist ON", C.Green)
+    else
+        TogBtn.BackgroundColor3 = C.Red
+        TogBtn.Text             = "OFF"
+        SetStatus("Blacklist OFF", C.Muted)
+    end
+end)
+
+-- ── Add player ───────────────────────────────────────────────
+AddPlrBtn.MouseButton1Click:Connect(function()
+    local name = PlrInput.Text:match("^%s*(.-)%s*$")
+    if name == "" then SetStatus("Enter a username.", C.Red) return end
+    if State.Blacklisted[name] then SetStatus(name .. " already listed.", C.Red) return end
+    State.Blacklisted[name] = true
+    PlrInput.Text = ""
+    RefreshList()
+    RE_Execute:FireServer("ADD", { username = name })
+    SetStatus("Blacklisted: " .. name, C.Red)
+end)
+
+-- ── Sync back from server ─────────────────────────────────────
+RE_Sync.OnClientEvent:Connect(function(eventType, data)
+    if eventType == "LIST" then
+        State.Blacklisted = data
+        RefreshList()
+    elseif eventType == "CMD" then
+        SetStatus(tostring(data), C.Red)
+    elseif eventType == "BLIND" then
+        -- Apply blur effect to this client
+        local blur = game:GetService("Lighting"):FindFirstChild("MIH_Blur")
+        if data == true then
+            if not blur then
+                blur = Instance.new("BlurEffect")
+                blur.Name  = "MIH_Blur"
+                blur.Size  = 56
+                blur.Parent = game:GetService("Lighting")
+            end
+        else
+            if blur then blur:Destroy() end
+        end
+    end
+end)
+
+-- ── Hide / Show ──────────────────────────────────────────────
+HideBtn.MouseButton1Click:Connect(function()
+    State.UIVisible = false
+    Tween(Main, {Position = UDim2.new(
+        Main.Position.X.Scale, Main.Position.X.Offset,
+        -0.15, 0
+    )}, 0.22, Enum.EasingStyle.Back)
+    task.delay(0.22, function()
+        Main.Visible = false
+        Mini.Visible = true
+    end)
+end)
+
+Mini.MouseButton1Click:Connect(function()
+    if State.UIVisible then return end
+    State.UIVisible  = true
+    Main.Visible     = true
+    Mini.Visible     = false
+    Main.Position    = UDim2.new(0.5, -154, -0.15, 0)
+    Tween(Main, {Position = UDim2.new(0.5, -154, 0.5, -210)}, 0.3, Enum.EasingStyle.Back)
+end)
+
+-- ── Init ─────────────────────────────────────────────────────
+SetMode("Default")
+RefreshList()
+SetStatus("Ready.", C.Muted)
+print("[MIH Blacklist] UI loaded.")
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE 3 — SETUP INSTRUCTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STEP 1:
+  In Roblox Studio, open ServerScriptService.
+  Create a new Script named "BlacklistServer".
+  Paste FILE 1 code into it.
+
+STEP 2:
+  Open StarterPlayer > StarterPlayerScripts.
+  Create a new LocalScript named "BlacklistUI".
+  Paste FILE 2 code into it.
+
+STEP 3 (Optional - Admin Lock):
+  In the server script (FILE 1), find the ADMINS table:
+      local ADMINS = {}
+  Add your UserId like this:
+      local ADMINS = { [123456789] = true }
+  Then set:
+      local ALLOW_ALL = false
+  This restricts the UI to only work for that UserId.
+
+BUILT-IN COMMANDS (Default Mode):
+  Freeze   — Anchors the player's HumanoidRootPart (can't move)
+  Mute     — Sets a MIH_Muted BoolValue on the player
+  Glitch   — Rapidly teleports player around for 1 second
+  Blind    — Applies a BlurEffect via Lighting to target's client
+
+CUSTOM COMMANDS:
+  Any word you type becomes a command sent as:
+      "[word] [username]"
+  Built-in names (freeze/mute/glitch/blind/kill/kick/unfreeze/unblind)
+  are handled automatically. All others are printed and fired to
+  all admin clients via the status bar.
+
+  The ▶ button next to each blacklisted player fires all
+  commands on them immediately, even if they're already in server.
+
+================================================================
