@@ -1,0 +1,2026 @@
+--[[
+    ╔═══════════════════════════════════════════════╗
+    ║        MadeInHeaven's Clipboard v1.0          ║
+    ║   Pastel Yellow • Clean • Modern • Full UI    ║
+    ╚═══════════════════════════════════════════════╝
+    
+    Features:
+    - Up to 1000 slots per tab
+    - Custom slot naming & editing
+    - Tab system with custom names
+    - Search by slot title
+    - Draggable UI + draggable H logo
+    - X button to hide, H logo to show
+    - Settings panel (theme colors, font size)
+    - Auto-load on join/server hop toggle
+    - Slot duplication, locking, favorites, export
+    - Slot character counter
+    - Sort slots (A-Z, Date, Favorites)
+]]
+
+-- ╔══════════════════════════════════╗
+-- ║         SERVICES & SETUP         ║
+-- ╚══════════════════════════════════╝
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ╔══════════════════════════════════╗
+-- ║         DATA STORE               ║
+-- ╚══════════════════════════════════╝
+
+local ClipboardData = {
+    tabs = {
+        { name = "General", slots = {} }
+    },
+    settings = {
+        accentColor = Color3.fromRGB(255, 235, 150),
+        bgColor = Color3.fromRGB(255, 252, 235),
+        textColor = Color3.fromRGB(60, 50, 30),
+        fontSize = 13,
+        autoLoad = true,
+        sortMode = "Date",
+    },
+    activeTabIndex = 1,
+    version = "1.0"
+}
+
+-- ╔══════════════════════════════════╗
+-- ║       SAVE / LOAD SYSTEM         ║
+-- ╚══════════════════════════════════╝
+
+local function SafeJSON(t)
+    local ok, result = pcall(function() return HttpService:JSONEncode(t) end)
+    if ok then return result else return nil end
+end
+
+local function SaveData()
+    if not writefile then return end
+    local ok, encoded = pcall(function()
+        local export = {
+            tabs = {},
+            settings = {
+                accentColorR = ClipboardData.settings.accentColor.R,
+                accentColorG = ClipboardData.settings.accentColor.G,
+                accentColorB = ClipboardData.settings.accentColor.B,
+                bgColorR = ClipboardData.settings.bgColor.R,
+                bgColorG = ClipboardData.settings.bgColor.G,
+                bgColorB = ClipboardData.settings.bgColor.B,
+                textColorR = ClipboardData.settings.textColor.R,
+                textColorG = ClipboardData.settings.textColor.G,
+                textColorB = ClipboardData.settings.textColor.B,
+                fontSize = ClipboardData.settings.fontSize,
+                autoLoad = ClipboardData.settings.autoLoad,
+                sortMode = ClipboardData.settings.sortMode,
+            },
+            activeTabIndex = ClipboardData.activeTabIndex,
+        }
+        for _, tab in ipairs(ClipboardData.tabs) do
+            local t = { name = tab.name, slots = {} }
+            for _, slot in ipairs(tab.slots) do
+                table.insert(t.slots, {
+                    name = slot.name,
+                    content = slot.content,
+                    locked = slot.locked,
+                    favorite = slot.favorite,
+                    created = slot.created,
+                })
+            end
+            table.insert(export.tabs, t)
+        end
+        return HttpService:JSONEncode(export)
+    end)
+    if ok then
+        pcall(function() writefile("MIH_Clipboard.json", encoded) end)
+    end
+end
+
+local function LoadData()
+    if not readfile then return end
+    local ok, raw = pcall(function() return readfile("MIH_Clipboard.json") end)
+    if not ok or not raw or raw == "" then return end
+    local ok2, data = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not ok2 or not data then return end
+
+    pcall(function()
+        if data.tabs then
+            ClipboardData.tabs = {}
+            for _, tab in ipairs(data.tabs) do
+                local t = { name = tab.name or "Tab", slots = {} }
+                for _, slot in ipairs(tab.slots or {}) do
+                    table.insert(t.slots, {
+                        name = slot.name or "Slot",
+                        content = slot.content or "",
+                        locked = slot.locked or false,
+                        favorite = slot.favorite or false,
+                        created = slot.created or os.time(),
+                    })
+                end
+                table.insert(ClipboardData.tabs, t)
+            end
+        end
+        if data.settings then
+            local s = data.settings
+            if s.accentColorR then ClipboardData.settings.accentColor = Color3.new(s.accentColorR, s.accentColorG, s.accentColorB) end
+            if s.bgColorR then ClipboardData.settings.bgColor = Color3.new(s.bgColorR, s.bgColorG, s.bgColorB) end
+            if s.textColorR then ClipboardData.settings.textColor = Color3.new(s.textColorR, s.textColorG, s.textColorB) end
+            if s.fontSize then ClipboardData.settings.fontSize = s.fontSize end
+            if s.autoLoad ~= nil then ClipboardData.settings.autoLoad = s.autoLoad end
+            if s.sortMode then ClipboardData.settings.sortMode = s.sortMode end
+        end
+        if data.activeTabIndex then ClipboardData.activeTabIndex = data.activeTabIndex end
+    end)
+end
+
+LoadData()
+
+-- ╔══════════════════════════════════╗
+-- ║         SCREEN GUI SETUP         ║
+-- ╚══════════════════════════════════╝
+
+-- Remove existing GUI if present
+if PlayerGui:FindFirstChild("MIH_Clipboard") then
+    PlayerGui:FindFirstChild("MIH_Clipboard"):Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "MIH_Clipboard"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = PlayerGui
+
+-- ╔══════════════════════════════════╗
+-- ║        UTILITY FUNCTIONS         ║
+-- ╚══════════════════════════════════╝
+
+local function Tween(obj, props, dur, style, dir)
+    dur = dur or 0.2
+    style = style or Enum.EasingStyle.Quart
+    dir = dir or Enum.EasingDirection.Out
+    local ti = TweenInfo.new(dur, style, dir)
+    TweenService:Create(obj, ti, props):Play()
+end
+
+local function MakeDraggable(frame, handle)
+    handle = handle or frame
+    local dragging, dragStart, startPos = false, nil, nil
+    handle.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = inp.Position
+            startPos = frame.Position
+        end
+    end)
+    handle.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(inp)
+        if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = inp.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+local function Create(class, props)
+    local obj = Instance.new(class)
+    for k, v in pairs(props) do
+        if k ~= "Parent" then obj[k] = v end
+    end
+    if props.Parent then obj.Parent = props.Parent end
+    return obj
+end
+
+local function RoundCorner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 10)
+    c.Parent = parent
+    return c
+end
+
+local function Shadow(parent, size, transparency)
+    local s = Create("ImageLabel", {
+        Name = "Shadow",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0.5, 0, 0.5, 4),
+        Size = UDim2.new(1, size or 20, 1, size or 20),
+        ZIndex = parent.ZIndex - 1,
+        Image = "rbxassetid://6014261993",
+        ImageColor3 = Color3.fromRGB(200, 180, 120),
+        ImageTransparency = transparency or 0.55,
+        ScaleType = Enum.ScaleType.Slice,
+        SliceCenter = Rect.new(49, 49, 450, 450),
+        Parent = parent,
+    })
+    return s
+end
+
+-- ╔══════════════════════════════════╗
+-- ║        COLOR THEME VARS          ║
+-- ╚══════════════════════════════════╝
+
+local S = ClipboardData.settings
+
+local function C(r,g,b) return Color3.fromRGB(r,g,b) end
+
+-- Pastel yellow palette
+local PALETTE = {
+    bg        = S.bgColor,
+    panel     = C(255, 248, 210),
+    accent    = S.accentColor,
+    accent2   = C(255, 220, 100),
+    header    = C(255, 242, 170),
+    border    = C(240, 210, 120),
+    text      = S.textColor,
+    textLight = C(130, 110, 60),
+    slot      = C(255, 253, 230),
+    slotHover = C(255, 247, 195),
+    tabActive = C(255, 235, 130),
+    tabBg     = C(255, 250, 220),
+    danger    = C(255, 130, 130),
+    success   = C(140, 210, 140),
+    lock      = C(200, 170, 80),
+    fav       = C(255, 180, 80),
+    white     = C(255,255,255),
+    dark      = C(50, 40, 20),
+}
+
+local function ApplyTheme()
+    PALETTE.bg = S.bgColor
+    PALETTE.accent = S.accentColor
+    PALETTE.text = S.textColor
+end
+
+-- ╔══════════════════════════════════╗
+-- ║        MAIN WINDOW               ║
+-- ╚══════════════════════════════════╝
+
+local MainFrame = Create("Frame", {
+    Name = "MainFrame",
+    Size = UDim2.new(0, 560, 0, 640),
+    Position = UDim2.new(0.5, -280, 0.5, -320),
+    BackgroundColor3 = PALETTE.bg,
+    BorderSizePixel = 0,
+    ClipsDescendants = false,
+    ZIndex = 10,
+    Parent = ScreenGui,
+})
+RoundCorner(MainFrame, 16)
+Shadow(MainFrame, 30, 0.45)
+
+local MainUICorner = MainFrame:FindFirstChild("UICorner") or Instance.new("UICorner", MainFrame)
+
+-- ╔══════════════════════════════════╗
+-- ║        HEADER BAR                ║
+-- ╚══════════════════════════════════╝
+
+local Header = Create("Frame", {
+    Name = "Header",
+    Size = UDim2.new(1, 0, 0, 52),
+    BackgroundColor3 = PALETTE.header,
+    BorderSizePixel = 0,
+    ZIndex = 11,
+    Parent = MainFrame,
+})
+RoundCorner(Header, 16)
+
+-- Fix bottom corners of header
+local HeaderFix = Create("Frame", {
+    Size = UDim2.new(1, 0, 0, 16),
+    Position = UDim2.new(0, 0, 1, -16),
+    BackgroundColor3 = PALETTE.header,
+    BorderSizePixel = 0,
+    ZIndex = 11,
+    Parent = Header,
+})
+
+local HLogo = Create("TextLabel", {
+    Name = "HLogo",
+    Text = "✦ MadeInHeaven's Clipboard",
+    Font = Enum.Font.GothamBold,
+    TextSize = 15,
+    TextColor3 = PALETTE.text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 16, 0, 0),
+    Size = UDim2.new(1, -120, 1, 0),
+    ZIndex = 12,
+    Parent = Header,
+})
+
+-- Settings Button
+local SettingsBtn = Create("TextButton", {
+    Name = "SettingsBtn",
+    Text = "⚙",
+    Font = Enum.Font.GothamBold,
+    TextSize = 18,
+    TextColor3 = PALETTE.textLight,
+    BackgroundColor3 = PALETTE.accent,
+    Size = UDim2.new(0, 32, 0, 32),
+    Position = UDim2.new(1, -82, 0.5, -16),
+    ZIndex = 12,
+    Parent = Header,
+})
+RoundCorner(SettingsBtn, 8)
+
+-- Close Button
+local CloseBtn = Create("TextButton", {
+    Name = "CloseBtn",
+    Text = "✕",
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    TextColor3 = PALETTE.white,
+    BackgroundColor3 = PALETTE.danger,
+    Size = UDim2.new(0, 32, 0, 32),
+    Position = UDim2.new(1, -44, 0.5, -16),
+    ZIndex = 12,
+    Parent = Header,
+})
+RoundCorner(CloseBtn, 8)
+
+MakeDraggable(MainFrame, Header)
+
+-- ╔══════════════════════════════════╗
+-- ║       TAB BAR                    ║
+-- ╚══════════════════════════════════╝
+
+local TabBarScroll = Create("ScrollingFrame", {
+    Name = "TabBarScroll",
+    Position = UDim2.new(0, 8, 0, 56),
+    Size = UDim2.new(1, -16, 0, 38),
+    BackgroundTransparency = 1,
+    ScrollBarThickness = 0,
+    ScrollingDirection = Enum.ScrollingDirection.X,
+    CanvasSize = UDim2.new(0, 0, 1, 0),
+    ZIndex = 11,
+    Parent = MainFrame,
+})
+
+local TabBarLayout = Create("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 6),
+    Parent = TabBarScroll,
+})
+
+-- Search Bar
+local SearchBox = Create("TextBox", {
+    Name = "SearchBox",
+    PlaceholderText = "🔍  Search slots...",
+    Text = "",
+    Font = Enum.Font.Gotham,
+    TextSize = 13,
+    TextColor3 = PALETTE.text,
+    PlaceholderColor3 = PALETTE.textLight,
+    BackgroundColor3 = PALETTE.panel,
+    BorderSizePixel = 0,
+    Position = UDim2.new(0, 8, 0, 98),
+    Size = UDim2.new(1, -16, 0, 32),
+    ClearTextOnFocus = false,
+    ZIndex = 11,
+    Parent = MainFrame,
+})
+RoundCorner(SearchBox, 8)
+Create("UIPadding", { PaddingLeft = UDim.new(0,12), Parent = SearchBox })
+
+-- Sort Dropdown Label
+local SortLabel = Create("TextButton", {
+    Name = "SortBtn",
+    Text = "Sort: " .. S.sortMode .. " ▾",
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextColor3 = PALETTE.textLight,
+    BackgroundColor3 = PALETTE.panel,
+    BorderSizePixel = 0,
+    Position = UDim2.new(1, -110, 0, 98),
+    Size = UDim2.new(0, 102, 0, 32),
+    ZIndex = 13,
+    Parent = MainFrame,
+})
+RoundCorner(SortLabel, 8)
+SearchBox.Size = UDim2.new(1, -126, 0, 32)
+
+-- ╔══════════════════════════════════╗
+-- ║     SLOTS SCROLL AREA            ║
+-- ╚══════════════════════════════════╝
+
+local SlotsScroll = Create("ScrollingFrame", {
+    Name = "SlotsScroll",
+    Position = UDim2.new(0, 8, 0, 136),
+    Size = UDim2.new(1, -16, 1, -196),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = PALETTE.border,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    ZIndex = 11,
+    Parent = MainFrame,
+})
+
+local SlotsLayout = Create("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 6),
+    Parent = SlotsScroll,
+})
+
+Create("UIPadding", {
+    PaddingTop = UDim.new(0, 4),
+    PaddingBottom = UDim.new(0, 4),
+    Parent = SlotsScroll,
+})
+
+-- ╔══════════════════════════════════╗
+-- ║        BOTTOM BAR                ║
+-- ╚══════════════════════════════════╝
+
+local BottomBar = Create("Frame", {
+    Name = "BottomBar",
+    Position = UDim2.new(0, 0, 1, -54),
+    Size = UDim2.new(1, 0, 0, 54),
+    BackgroundColor3 = PALETTE.header,
+    BorderSizePixel = 0,
+    ZIndex = 11,
+    Parent = MainFrame,
+})
+RoundCorner(BottomBar, 16)
+Create("Frame", {
+    Size = UDim2.new(1, 0, 0, 16),
+    BackgroundColor3 = PALETTE.header,
+    BorderSizePixel = 0,
+    ZIndex = 11,
+    Parent = BottomBar,
+})
+
+local AddSlotBtn = Create("TextButton", {
+    Name = "AddSlotBtn",
+    Text = "+ Add Slot",
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = PALETTE.accent,
+    Size = UDim2.new(0, 130, 0, 34),
+    Position = UDim2.new(0, 10, 0.5, -17),
+    ZIndex = 12,
+    Parent = BottomBar,
+})
+RoundCorner(AddSlotBtn, 10)
+
+local AddTabBtn = Create("TextButton", {
+    Name = "AddTabBtn",
+    Text = "+ Add Tab",
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextColor3 = PALETTE.textLight,
+    BackgroundColor3 = PALETTE.tabBg,
+    Size = UDim2.new(0, 120, 0, 34),
+    Position = UDim2.new(0, 148, 0.5, -17),
+    ZIndex = 12,
+    Parent = BottomBar,
+})
+RoundCorner(AddTabBtn, 10)
+
+local SlotCountLabel = Create("TextLabel", {
+    Name = "SlotCount",
+    Text = "0 / 1000 slots",
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextColor3 = PALETTE.textLight,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(1, -140, 0.5, -10),
+    Size = UDim2.new(0, 130, 0, 20),
+    TextXAlignment = Enum.TextXAlignment.Right,
+    ZIndex = 12,
+    Parent = BottomBar,
+})
+
+-- ╔══════════════════════════════════╗
+-- ║       FLOATING H BUTTON          ║
+-- ╚══════════════════════════════════╝
+
+local HButton = Create("TextButton", {
+    Name = "HButton",
+    Text = "H",
+    Font = Enum.Font.GothamBlack,
+    TextSize = 20,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = PALETTE.accent,
+    Size = UDim2.new(0, 52, 0, 52),
+    Position = UDim2.new(0, 20, 0.5, -26),
+    ZIndex = 20,
+    Visible = false,
+    Parent = ScreenGui,
+})
+RoundCorner(HButton, 26)
+Shadow(HButton, 12, 0.5)
+
+MakeDraggable(HButton)
+
+-- ╔══════════════════════════════════╗
+-- ║      MODAL / OVERLAY             ║
+-- ╚══════════════════════════════════╝
+
+local Overlay = Create("Frame", {
+    Name = "Overlay",
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundColor3 = C(0,0,0),
+    BackgroundTransparency = 1,
+    ZIndex = 50,
+    Visible = false,
+    Parent = ScreenGui,
+})
+
+local Modal = Create("Frame", {
+    Name = "Modal",
+    Size = UDim2.new(0, 420, 0, 320),
+    Position = UDim2.new(0.5, -210, 0.5, -160),
+    BackgroundColor3 = PALETTE.bg,
+    BorderSizePixel = 0,
+    ZIndex = 55,
+    Visible = false,
+    Parent = ScreenGui,
+})
+RoundCorner(Modal, 16)
+Shadow(Modal, 20, 0.4)
+
+local ModalTitle = Create("TextLabel", {
+    Name = "ModalTitle",
+    Text = "Edit Slot",
+    Font = Enum.Font.GothamBold,
+    TextSize = 16,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = PALETTE.header,
+    Size = UDim2.new(1, 0, 0, 48),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 56,
+    Parent = Modal,
+})
+RoundCorner(ModalTitle, 16)
+Create("Frame", {
+    Size = UDim2.new(1,0,0,16),
+    Position = UDim2.new(0,0,1,-16),
+    BackgroundColor3 = PALETTE.header,
+    ZIndex=56,
+    Parent=ModalTitle
+})
+Create("UIPadding", { PaddingLeft = UDim.new(0,16), Parent = ModalTitle })
+
+local ModalCloseBtn = Create("TextButton", {
+    Text = "✕",
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextColor3 = PALETTE.white,
+    BackgroundColor3 = PALETTE.danger,
+    Size = UDim2.new(0, 28, 0, 28),
+    Position = UDim2.new(1, -38, 0.5, -14),
+    ZIndex = 57,
+    Parent = ModalTitle,
+})
+RoundCorner(ModalCloseBtn, 7)
+
+local ModalNameLabel = Create("TextLabel", {
+    Text = "Slot Name:",
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextColor3 = PALETTE.textLight,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 16, 0, 56),
+    Size = UDim2.new(1, -32, 0, 18),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 56,
+    Parent = Modal,
+})
+
+local ModalNameBox = Create("TextBox", {
+    Name = "ModalNameBox",
+    PlaceholderText = "Enter slot name...",
+    Text = "",
+    Font = Enum.Font.Gotham,
+    TextSize = 13,
+    TextColor3 = PALETTE.text,
+    PlaceholderColor3 = PALETTE.textLight,
+    BackgroundColor3 = PALETTE.panel,
+    BorderSizePixel = 0,
+    Position = UDim2.new(0, 16, 0, 78),
+    Size = UDim2.new(1, -32, 0, 34),
+    ClearTextOnFocus = false,
+    ZIndex = 56,
+    Parent = Modal,
+})
+RoundCorner(ModalNameBox, 8)
+Create("UIPadding", { PaddingLeft = UDim.new(0,12), Parent = ModalNameBox })
+
+local ModalContentLabel = Create("TextLabel", {
+    Text = "Content:",
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextColor3 = PALETTE.textLight,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 16, 0, 118),
+    Size = UDim2.new(1, -32, 0, 18),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 56,
+    Parent = Modal,
+})
+
+local ModalContentBox = Create("TextBox", {
+    Name = "ModalContentBox",
+    PlaceholderText = "Type or paste anything here...",
+    Text = "",
+    Font = Enum.Font.Gotham,
+    TextSize = 13,
+    TextColor3 = PALETTE.text,
+    PlaceholderColor3 = PALETTE.textLight,
+    BackgroundColor3 = PALETTE.panel,
+    BorderSizePixel = 0,
+    MultiLine = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    Position = UDim2.new(0, 16, 0, 140),
+    Size = UDim2.new(1, -32, 0, 110),
+    ClearTextOnFocus = false,
+    ZIndex = 56,
+    Parent = Modal,
+})
+RoundCorner(ModalContentBox, 8)
+Create("UIPadding", {
+    PaddingLeft = UDim.new(0,10),
+    PaddingTop = UDim.new(0,8),
+    Parent = ModalContentBox
+})
+
+local ModalCharCount = Create("TextLabel", {
+    Text = "0 chars",
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextColor3 = PALETTE.textLight,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 16, 0, 252),
+    Size = UDim2.new(0.5, 0, 0, 16),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 56,
+    Parent = Modal,
+})
+
+local ModalSaveBtn = Create("TextButton", {
+    Text = "💾  Save",
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = PALETTE.accent,
+    Size = UDim2.new(0, 110, 0, 34),
+    Position = UDim2.new(1, -130, 1, -46),
+    ZIndex = 56,
+    Parent = Modal,
+})
+RoundCorner(ModalSaveBtn, 10)
+
+local ModalCancelBtn = Create("TextButton", {
+    Text = "Cancel",
+    Font = Enum.Font.Gotham,
+    TextSize = 13,
+    TextColor3 = PALETTE.textLight,
+    BackgroundColor3 = PALETTE.panel,
+    Size = UDim2.new(0, 90, 0, 34),
+    Position = UDim2.new(1, -228, 1, -46),
+    ZIndex = 56,
+    Parent = Modal,
+})
+RoundCorner(ModalCancelBtn, 10)
+
+-- ╔══════════════════════════════════╗
+-- ║        SETTINGS PANEL            ║
+-- ╚══════════════════════════════════╝
+
+local SettingsPanel = Create("Frame", {
+    Name = "SettingsPanel",
+    Size = UDim2.new(0, 400, 0, 520),
+    Position = UDim2.new(0.5, -200, 0.5, -260),
+    BackgroundColor3 = PALETTE.bg,
+    BorderSizePixel = 0,
+    ZIndex = 60,
+    Visible = false,
+    Parent = ScreenGui,
+})
+RoundCorner(SettingsPanel, 16)
+Shadow(SettingsPanel, 20, 0.4)
+
+local SettingsHeader = Create("Frame", {
+    Size = UDim2.new(1, 0, 0, 48),
+    BackgroundColor3 = PALETTE.header,
+    BorderSizePixel = 0,
+    ZIndex = 61,
+    Parent = SettingsPanel,
+})
+RoundCorner(SettingsHeader, 16)
+Create("Frame", {
+    Size = UDim2.new(1,0,0,16),
+    Position = UDim2.new(0,0,1,-16),
+    BackgroundColor3 = PALETTE.header,
+    ZIndex=61,
+    Parent=SettingsHeader
+})
+
+Create("TextLabel", {
+    Text = "⚙  Settings",
+    Font = Enum.Font.GothamBold,
+    TextSize = 15,
+    TextColor3 = PALETTE.text,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 16, 0, 0),
+    Size = UDim2.new(1, -60, 1, 0),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 62,
+    Parent = SettingsHeader,
+})
+
+local SettingsCloseBtn = Create("TextButton", {
+    Text = "✕",
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextColor3 = PALETTE.white,
+    BackgroundColor3 = PALETTE.danger,
+    Size = UDim2.new(0, 28, 0, 28),
+    Position = UDim2.new(1, -38, 0.5, -14),
+    ZIndex = 62,
+    Parent = SettingsHeader,
+})
+RoundCorner(SettingsCloseBtn, 7)
+
+local SettingsScroll = Create("ScrollingFrame", {
+    Position = UDim2.new(0, 12, 0, 56),
+    Size = UDim2.new(1, -24, 1, -64),
+    BackgroundTransparency = 1,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = PALETTE.border,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    ZIndex = 61,
+    Parent = SettingsPanel,
+})
+
+local SettingsLayout = Create("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 10),
+    Parent = SettingsScroll,
+})
+Create("UIPadding", { PaddingTop = UDim.new(0,8), PaddingBottom = UDim.new(0,8), Parent = SettingsScroll })
+
+MakeDraggable(SettingsPanel, SettingsHeader)
+
+-- Helper: Settings Section Title
+local function SettingsSectionTitle(text, order)
+    return Create("TextLabel", {
+        Text = text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextColor3 = PALETTE.textLight,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 20),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = order,
+        ZIndex = 62,
+        Parent = SettingsScroll,
+    })
+end
+
+-- Helper: Color picker row
+local function ColorPickerRow(label, colorKey, order)
+    local row = Create("Frame", {
+        Name = label,
+        Size = UDim2.new(1, 0, 0, 42),
+        BackgroundColor3 = PALETTE.panel,
+        BorderSizePixel = 0,
+        LayoutOrder = order,
+        ZIndex = 62,
+        Parent = SettingsScroll,
+    })
+    RoundCorner(row, 8)
+
+    Create("TextLabel", {
+        Text = label,
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        TextColor3 = PALETTE.text,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 0, 0),
+        Size = UDim2.new(1, -80, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 63,
+        Parent = row,
+    })
+
+    local swatch = Create("Frame", {
+        Name = "Swatch",
+        BackgroundColor3 = S[colorKey],
+        Size = UDim2.new(0, 32, 0, 24),
+        Position = UDim2.new(1, -52, 0.5, -12),
+        ZIndex = 63,
+        Parent = row,
+    })
+    RoundCorner(swatch, 6)
+
+    -- Simple RGB input label (note: full color picker needs HSV widget; simplified here)
+    local hint = Create("TextLabel", {
+        Text = "Click",
+        Font = Enum.Font.Gotham,
+        TextSize = 10,
+        TextColor3 = PALETTE.textLight,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, -52, 0.5, 12),
+        Size = UDim2.new(0, 50, 0, 14),
+        ZIndex = 63,
+        Parent = row,
+    })
+
+    return row, swatch
+end
+
+-- Settings: Color section
+SettingsSectionTitle("🎨  Theme Colors", 1)
+
+local accentRow, accentSwatch = ColorPickerRow("Accent Color", "accentColor", 2)
+local bgRow, bgSwatch = ColorPickerRow("Background Color", "bgColor", 3)
+local textRow, textSwatch = ColorPickerRow("Text Color", "textColor", 4)
+
+-- Preset themes
+SettingsSectionTitle("🌈  Quick Presets", 5)
+local presetRow = Create("Frame", {
+    Size = UDim2.new(1, 0, 0, 42),
+    BackgroundColor3 = PALETTE.panel,
+    BorderSizePixel = 0,
+    LayoutOrder = 6,
+    ZIndex = 62,
+    Parent = SettingsScroll,
+})
+RoundCorner(presetRow, 8)
+
+local presets = {
+    { name="☀️ Yellow",   accent=C(255,235,150), bg=C(255,252,235), text=C(60,50,30) },
+    { name="🌸 Pink",     accent=C(255,192,203), bg=C(255,240,245), text=C(80,40,60) },
+    { name="🌿 Mint",     accent=C(170,240,200), bg=C(235,255,245), text=C(30,80,50) },
+    { name="🫐 Lavender", accent=C(200,180,255), bg=C(240,235,255), text=C(60,40,100) },
+    { name="🍑 Peach",    accent=C(255,200,160), bg=C(255,245,235), text=C(100,60,30) },
+}
+
+local presetsLayout = Create("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0,6),
+    Parent = presetRow,
+})
+Create("UIPadding", { PaddingLeft=UDim.new(0,8), PaddingTop=UDim.new(0,6), Parent=presetRow })
+
+local presetButtons = {}
+for i, p in ipairs(presets) do
+    local pb = Create("TextButton", {
+        Text = p.name,
+        Font = Enum.Font.Gotham,
+        TextSize = 10,
+        TextColor3 = p.text,
+        BackgroundColor3 = p.accent,
+        Size = UDim2.new(0, 66, 0, 28),
+        ZIndex = 63,
+        Parent = presetRow,
+    })
+    RoundCorner(pb, 6)
+    presetButtons[i] = { btn = pb, data = p }
+end
+
+-- Font size
+SettingsSectionTitle("🔤  Font Size", 7)
+local fontRow = Create("Frame", {
+    Size = UDim2.new(1, 0, 0, 42),
+    BackgroundColor3 = PALETTE.panel,
+    BorderSizePixel = 0,
+    LayoutOrder = 8,
+    ZIndex = 62,
+    Parent = SettingsScroll,
+})
+RoundCorner(fontRow, 8)
+Create("TextLabel", {
+    Text = "Slot Text Size",
+    Font = Enum.Font.Gotham,
+    TextSize = 13,
+    TextColor3 = PALETTE.text,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 12, 0, 0),
+    Size = UDim2.new(0.5, 0, 1, 0),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 63,
+    Parent = fontRow,
+})
+
+local FontSmall = Create("TextButton", {
+    Text = "S (12)",
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = S.fontSize == 12 and PALETTE.accent or PALETTE.tabBg,
+    Size = UDim2.new(0, 55, 0, 26),
+    Position = UDim2.new(0.5, 0, 0.5, -13),
+    ZIndex = 63,
+    Parent = fontRow,
+})
+RoundCorner(FontSmall, 6)
+
+local FontMed = Create("TextButton", {
+    Text = "M (14)",
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = S.fontSize == 14 and PALETTE.accent or PALETTE.tabBg,
+    Size = UDim2.new(0, 55, 0, 26),
+    Position = UDim2.new(0.5, 62, 0.5, -13),
+    ZIndex = 63,
+    Parent = fontRow,
+})
+RoundCorner(FontMed, 6)
+
+local FontLarge = Create("TextButton", {
+    Text = "L (16)",
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = S.fontSize == 16 and PALETTE.accent or PALETTE.tabBg,
+    Size = UDim2.new(0, 55, 0, 26),
+    Position = UDim2.new(0.5, 124, 0.5, -13),
+    ZIndex = 63,
+    Parent = fontRow,
+})
+RoundCorner(FontLarge, 6)
+
+-- Auto Load
+SettingsSectionTitle("🔄  Auto Load", 9)
+local autoLoadRow = Create("Frame", {
+    Size = UDim2.new(1, 0, 0, 52),
+    BackgroundColor3 = PALETTE.panel,
+    BorderSizePixel = 0,
+    LayoutOrder = 10,
+    ZIndex = 62,
+    Parent = SettingsScroll,
+})
+RoundCorner(autoLoadRow, 8)
+
+Create("TextLabel", {
+    Text = "Auto Load on Join / Rejoin",
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    TextColor3 = PALETTE.text,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 12, 0, 4),
+    Size = UDim2.new(1, -80, 0, 22),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 63,
+    Parent = autoLoadRow,
+})
+Create("TextLabel", {
+    Text = "Automatically shows clipboard when you join or rejoin a game",
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextColor3 = PALETTE.textLight,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(0, 12, 0, 28),
+    Size = UDim2.new(1, -80, 0, 16),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 63,
+    Parent = autoLoadRow,
+})
+
+local AutoLoadToggle = Create("TextButton", {
+    Name = "AutoLoadToggle",
+    Text = S.autoLoad and "ON" or "OFF",
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = S.autoLoad and PALETTE.success or C(200,200,200),
+    Size = UDim2.new(0, 52, 0, 26),
+    Position = UDim2.new(1, -64, 0.5, -13),
+    ZIndex = 63,
+    Parent = autoLoadRow,
+})
+RoundCorner(AutoLoadToggle, 13)
+
+-- Export All
+SettingsSectionTitle("📋  Data", 11)
+local exportRow = Create("Frame", {
+    Size = UDim2.new(1, 0, 0, 42),
+    BackgroundColor3 = PALETTE.panel,
+    BorderSizePixel = 0,
+    LayoutOrder = 12,
+    ZIndex = 62,
+    Parent = SettingsScroll,
+})
+RoundCorner(exportRow, 8)
+
+local ExportBtn = Create("TextButton", {
+    Text = "📤  Export All to Clipboard",
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = PALETTE.accent,
+    Size = UDim2.new(0, 180, 0, 28),
+    Position = UDim2.new(0, 10, 0.5, -14),
+    ZIndex = 63,
+    Parent = exportRow,
+})
+RoundCorner(ExportBtn, 8)
+
+local ClearAllBtn = Create("TextButton", {
+    Text = "🗑  Clear All Data",
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextColor3 = PALETTE.white,
+    BackgroundColor3 = PALETTE.danger,
+    Size = UDim2.new(0, 140, 0, 28),
+    Position = UDim2.new(0, 200, 0.5, -14),
+    ZIndex = 63,
+    Parent = exportRow,
+})
+RoundCorner(ClearAllBtn, 8)
+
+-- Version label
+Create("TextLabel", {
+    Text = "MadeInHeaven's Clipboard v1.0  •  Made with ✦ love",
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextColor3 = PALETTE.textLight,
+    BackgroundTransparency = 1,
+    Size = UDim2.new(1, 0, 0, 20),
+    TextXAlignment = Enum.TextXAlignment.Center,
+    LayoutOrder = 13,
+    ZIndex = 62,
+    Parent = SettingsScroll,
+})
+
+-- Update canvas size
+local function UpdateSettingsCanvas()
+    local h = SettingsLayout.AbsoluteContentSize.Y
+    SettingsScroll.CanvasSize = UDim2.new(0, 0, 0, h + 20)
+end
+SettingsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(UpdateSettingsCanvas)
+
+-- ╔══════════════════════════════════╗
+-- ║       COLOR PICKER MINI          ║
+-- ╚══════════════════════════════════╝
+
+local ColorPicker = Create("Frame", {
+    Name = "ColorPicker",
+    Size = UDim2.new(0, 280, 0, 180),
+    Position = UDim2.new(0.5, -140, 0.5, -90),
+    BackgroundColor3 = PALETTE.bg,
+    BorderSizePixel = 0,
+    ZIndex = 80,
+    Visible = false,
+    Parent = ScreenGui,
+})
+RoundCorner(ColorPicker, 12)
+Shadow(ColorPicker, 14, 0.45)
+
+local ColorPickerTitle = Create("TextLabel", {
+    Text = "Pick a Color",
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    TextColor3 = PALETTE.text,
+    BackgroundColor3 = PALETTE.header,
+    Size = UDim2.new(1, 0, 0, 36),
+    ZIndex = 81,
+    Parent = ColorPicker,
+})
+RoundCorner(ColorPickerTitle, 12)
+Create("Frame", {Size=UDim2.new(1,0,0,12),Position=UDim2.new(0,0,1,-12),BackgroundColor3=PALETTE.header,ZIndex=81,Parent=ColorPickerTitle})
+
+local CPCloseBtn = Create("TextButton", {
+    Text="✕", Font=Enum.Font.GothamBold, TextSize=12, TextColor3=PALETTE.white,
+    BackgroundColor3=PALETTE.danger, Size=UDim2.new(0,24,0,24),
+    Position=UDim2.new(1,-32,0.5,-12), ZIndex=82, Parent=ColorPickerTitle
+})
+RoundCorner(CPCloseBtn, 6)
+
+local CPLabel = Create("TextLabel", {
+    Text = "R: 255  G: 235  B: 150",
+    Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = PALETTE.textLight,
+    BackgroundTransparency = 1, Position = UDim2.new(0, 12, 0, 44),
+    Size = UDim2.new(1, -24, 0, 16), TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 81, Parent = ColorPicker,
+})
+
+local CPPreview = Create("Frame", {
+    BackgroundColor3 = PALETTE.accent,
+    Position = UDim2.new(0, 12, 0, 64),
+    Size = UDim2.new(1, -24, 0, 20),
+    ZIndex = 81, Parent = ColorPicker,
+})
+RoundCorner(CPPreview, 5)
+
+-- R G B Sliders (simple text inputs)
+local sliderLabels = {"R", "G", "B"}
+local cpInputs = {}
+local cpCurrentKey = nil
+local cpCurrentR, cpCurrentG, cpCurrentB = 255, 235, 150
+
+for i, lbl in ipairs(sliderLabels) do
+    Create("TextLabel", {
+        Text = lbl..":", Font=Enum.Font.GothamBold, TextSize=12,
+        TextColor3=PALETTE.text, BackgroundTransparency=1,
+        Position=UDim2.new(0,12,0,90+(i-1)*24), Size=UDim2.new(0,18,0,20),
+        ZIndex=81, Parent=ColorPicker
+    })
+    local inp = Create("TextBox", {
+        Text = i==1 and "255" or (i==2 and "235" or "150"),
+        Font=Enum.Font.Gotham, TextSize=12, TextColor3=PALETTE.text,
+        BackgroundColor3=PALETTE.panel, BorderSizePixel=0,
+        Position=UDim2.new(0,34,0,90+(i-1)*24), Size=UDim2.new(0,50,0,20),
+        ZIndex=81, Parent=ColorPicker, ClearTextOnFocus=false
+    })
+    RoundCorner(inp, 5)
+    cpInputs[i] = inp
+end
+
+local CPApplyBtn = Create("TextButton", {
+    Text = "Apply",
+    Font=Enum.Font.GothamBold, TextSize=13,
+    TextColor3=PALETTE.text, BackgroundColor3=PALETTE.accent,
+    Size=UDim2.new(0,80,0,28), Position=UDim2.new(1,-96,1,-38),
+    ZIndex=81, Parent=ColorPicker
+})
+RoundCorner(CPApplyBtn, 8)
+
+-- ╔══════════════════════════════════╗
+-- ║      NOTIFICATION TOAST          ║
+-- ╚══════════════════════════════════╝
+
+local Toast = Create("Frame", {
+    Name = "Toast",
+    Size = UDim2.new(0, 260, 0, 40),
+    Position = UDim2.new(0.5, -130, 1, 60),
+    BackgroundColor3 = PALETTE.accent,
+    BorderSizePixel = 0,
+    ZIndex = 100,
+    Parent = ScreenGui,
+})
+RoundCorner(Toast, 10)
+Shadow(Toast, 10, 0.5)
+
+local ToastLabel = Create("TextLabel", {
+    Text = "",
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextColor3 = PALETTE.text,
+    BackgroundTransparency = 1,
+    Size = UDim2.new(1, -16, 1, 0),
+    Position = UDim2.new(0, 8, 0, 0),
+    ZIndex = 101,
+    Parent = Toast,
+})
+
+local function ShowToast(msg, color)
+    Toast.BackgroundColor3 = color or PALETTE.accent
+    ToastLabel.Text = msg
+    Toast.Position = UDim2.new(0.5, -130, 1, 60)
+    Tween(Toast, { Position = UDim2.new(0.5, -130, 1, -60) }, 0.4)
+    task.delay(2.5, function()
+        Tween(Toast, { Position = UDim2.new(0.5, -130, 1, 60) }, 0.35)
+    end)
+end
+
+-- ╔══════════════════════════════════╗
+-- ║     NAME INPUT DIALOG            ║
+-- ╚══════════════════════════════════╝
+
+local NameDialog = Create("Frame", {
+    Name = "NameDialog",
+    Size = UDim2.new(0, 320, 0, 130),
+    Position = UDim2.new(0.5, -160, 0.5, -65),
+    BackgroundColor3 = PALETTE.bg,
+    BorderSizePixel = 0,
+    ZIndex = 90,
+    Visible = false,
+    Parent = ScreenGui,
+})
+RoundCorner(NameDialog, 14)
+Shadow(NameDialog, 14, 0.45)
+
+local NDTitle = Create("TextLabel", {
+    Text = "Enter Name",
+    Font = Enum.Font.GothamBold,
+    TextSize = 14, TextColor3 = PALETTE.text,
+    BackgroundColor3 = PALETTE.header,
+    Size = UDim2.new(1, 0, 0, 38),
+    ZIndex = 91, Parent = NameDialog,
+})
+RoundCorner(NDTitle, 14)
+Create("Frame", {Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,1,-14),BackgroundColor3=PALETTE.header,ZIndex=91,Parent=NDTitle})
+Create("UIPadding",{PaddingLeft=UDim.new(0,14),Parent=NDTitle})
+
+local NDInput = Create("TextBox", {
+    PlaceholderText = "Type here...", Text = "",
+    Font = Enum.Font.Gotham, TextSize = 13,
+    TextColor3 = PALETTE.text, PlaceholderColor3 = PALETTE.textLight,
+    BackgroundColor3 = PALETTE.panel, BorderSizePixel = 0,
+    Position = UDim2.new(0, 14, 0, 46), Size = UDim2.new(1, -28, 0, 32),
+    ClearTextOnFocus = false, ZIndex = 91, Parent = NameDialog,
+})
+RoundCorner(NDInput, 8)
+Create("UIPadding",{PaddingLeft=UDim.new(0,10),Parent=NDInput})
+
+local NDConfirm = Create("TextButton", {
+    Text = "✓ Confirm",
+    Font = Enum.Font.GothamBold, TextSize = 12,
+    TextColor3 = PALETTE.text, BackgroundColor3 = PALETTE.accent,
+    Size = UDim2.new(0, 100, 0, 28),
+    Position = UDim2.new(1, -118, 1, -38),
+    ZIndex = 91, Parent = NameDialog,
+})
+RoundCorner(NDConfirm, 8)
+
+local NDCancel = Create("TextButton", {
+    Text = "Cancel",
+    Font = Enum.Font.Gotham, TextSize = 12,
+    TextColor3 = PALETTE.textLight, BackgroundColor3 = PALETTE.panel,
+    Size = UDim2.new(0, 80, 0, 28),
+    Position = UDim2.new(1, -208, 1, -38),
+    ZIndex = 91, Parent = NameDialog,
+})
+RoundCorner(NDCancel, 8)
+
+local ndCallback = nil
+local function ShowNameDialog(title, placeholder, default, callback)
+    NDTitle.Text = title
+    NDInput.PlaceholderText = placeholder or "Type here..."
+    NDInput.Text = default or ""
+    NameDialog.Visible = true
+    ndCallback = callback
+    task.defer(function() NDInput:CaptureFocus() end)
+end
+
+NDConfirm.MouseButton1Click:Connect(function()
+    local val = NDInput.Text
+    NameDialog.Visible = false
+    if ndCallback and val and val ~= "" then
+        ndCallback(val)
+    end
+    ndCallback = nil
+end)
+NDCancel.MouseButton1Click:Connect(function()
+    NameDialog.Visible = false
+    ndCallback = nil
+end)
+
+-- ╔══════════════════════════════════╗
+-- ║       CONTEXT MENU               ║
+-- ╚══════════════════════════════════╝
+
+local ContextMenu = Create("Frame", {
+    Name = "ContextMenu",
+    Size = UDim2.new(0, 160, 0, 10),
+    BackgroundColor3 = PALETTE.bg,
+    BorderSizePixel = 0,
+    ZIndex = 95,
+    Visible = false,
+    Parent = ScreenGui,
+})
+RoundCorner(ContextMenu, 10)
+Shadow(ContextMenu, 10, 0.5)
+
+local ContextLayout = Create("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 2),
+    Parent = ContextMenu,
+})
+Create("UIPadding",{PaddingTop=UDim.new(0,4),PaddingBottom=UDim.new(0,4),Parent=ContextMenu})
+
+local contextItems = {}
+local contextCallback = nil
+
+local function HideContext()
+    ContextMenu.Visible = false
+    for _, c in ipairs(contextItems) do c:Destroy() end
+    contextItems = {}
+end
+
+local function ShowContext(pos, items)
+    HideContext()
+    ContextMenu.Position = UDim2.new(0, pos.X, 0, pos.Y)
+    ContextMenu.Visible = true
+    for i, item in ipairs(items) do
+        local btn = Create("TextButton", {
+            Text = item.icon.."  "..item.label,
+            Font = Enum.Font.Gotham, TextSize = 12,
+            TextColor3 = item.color or PALETTE.text,
+            BackgroundColor3 = PALETTE.bg,
+            BackgroundTransparency = 0,
+            Size = UDim2.new(1, 0, 0, 28),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = i, ZIndex = 96,
+            Parent = ContextMenu,
+        })
+        Create("UIPadding",{PaddingLeft=UDim.new(0,10),Parent=btn})
+        btn.MouseEnter:Connect(function() btn.BackgroundColor3 = PALETTE.slotHover end)
+        btn.MouseLeave:Connect(function() btn.BackgroundColor3 = PALETTE.bg end)
+        btn.MouseButton1Click:Connect(function()
+            HideContext()
+            item.action()
+        end)
+        table.insert(contextItems, btn)
+    end
+    local h = ContextLayout.AbsoluteContentSize.Y + 10
+    ContextMenu.Size = UDim2.new(0, 160, 0, h)
+end
+
+-- Hide context on outside click
+UserInputService.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        task.defer(function()
+            if ContextMenu.Visible then
+                local mouse = UserInputService:GetMouseLocation()
+                local pos = ContextMenu.AbsolutePosition
+                local sz = ContextMenu.AbsoluteSize
+                if mouse.X < pos.X or mouse.X > pos.X+sz.X or mouse.Y < pos.Y or mouse.Y > pos.Y+sz.Y then
+                    HideContext()
+                end
+            end
+        end)
+    end
+end)
+
+-- ╔══════════════════════════════════╗
+-- ║        CORE LOGIC                ║
+-- ╚══════════════════════════════════╝
+
+local searchQuery = ""
+local editingSlotData = nil   -- { tabIndex, slotIndex }
+local tabButtons = {}
+local slotFrames = {}
+
+local function GetCurrentTab()
+    return ClipboardData.tabs[ClipboardData.activeTabIndex]
+end
+
+local function GetSortedSlots(tab)
+    local sorted = {}
+    local query = searchQuery:lower()
+    for i, slot in ipairs(tab.slots) do
+        if query == "" or slot.name:lower():find(query, 1, true) or slot.content:lower():find(query, 1, true) then
+            table.insert(sorted, { index = i, slot = slot })
+        end
+    end
+
+    if S.sortMode == "A-Z" then
+        table.sort(sorted, function(a, b) return a.slot.name:lower() < b.slot.name:lower() end)
+    elseif S.sortMode == "Favorites" then
+        table.sort(sorted, function(a, b)
+            if a.slot.favorite == b.slot.favorite then return a.index < b.index end
+            return (a.slot.favorite and 1 or 0) > (b.slot.favorite and 1 or 0)
+        end)
+    else -- Date (default, insertion order)
+        -- already in insertion order
+    end
+
+    return sorted
+end
+
+-- ─── Render Tabs ───────────────────────────────────
+
+local function RenderTabs()
+    for _, btn in ipairs(tabButtons) do btn:Destroy() end
+    tabButtons = {}
+
+    local totalW = 0
+    for i, tab in ipairs(ClipboardData.tabs) do
+        local isActive = i == ClipboardData.activeTabIndex
+        local btn = Create("TextButton", {
+            Name = "Tab_"..i,
+            Text = tab.name,
+            Font = Enum.Font.GothamBold,
+            TextSize = 12,
+            TextColor3 = isActive and PALETTE.text or PALETTE.textLight,
+            BackgroundColor3 = isActive and PALETTE.tabActive or PALETTE.tabBg,
+            Size = UDim2.new(0, math.max(70, #tab.name * 8 + 24), 0, 30),
+            LayoutOrder = i,
+            ZIndex = 12,
+            Parent = TabBarScroll,
+        })
+        RoundCorner(btn, 8)
+
+        btn.MouseButton1Click:Connect(function()
+            ClipboardData.activeTabIndex = i
+            RenderTabs()
+            RenderSlots()
+        end)
+
+        btn.MouseButton2Click:Connect(function()
+            local mp = UserInputService:GetMouseLocation()
+            ShowContext(mp, {
+                { icon="✏️", label="Rename Tab", action=function()
+                    ShowNameDialog("Rename Tab", "New tab name...", tab.name, function(newName)
+                        ClipboardData.tabs[i].name = newName
+                        RenderTabs()
+                        SaveData()
+                        ShowToast("✦ Tab renamed!")
+                    end)
+                end},
+                { icon="🗑", label="Delete Tab", color=PALETTE.danger, action=function()
+                    if #ClipboardData.tabs <= 1 then
+                        ShowToast("⚠ Can't delete the last tab!", PALETTE.danger)
+                        return
+                    end
+                    table.remove(ClipboardData.tabs, i)
+                    if ClipboardData.activeTabIndex > #ClipboardData.tabs then
+                        ClipboardData.activeTabIndex = #ClipboardData.tabs
+                    end
+                    RenderTabs()
+                    RenderSlots()
+                    SaveData()
+                    ShowToast("🗑 Tab deleted!")
+                end},
+            })
+        end)
+
+        totalW = totalW + btn.AbsoluteSize.X + 6
+        table.insert(tabButtons, btn)
+    end
+
+    task.defer(function()
+        local tw = 0
+        for _, btn in ipairs(tabButtons) do
+            tw = tw + btn.AbsoluteSize.X + 6
+        end
+        TabBarScroll.CanvasSize = UDim2.new(0, tw + 4, 1, 0)
+    end)
+end
+
+-- ─── Render Slots ──────────────────────────────────
+
+local function OpenEditModal(tabIdx, slotIdx)
+    local tab = ClipboardData.tabs[tabIdx]
+    local slot = tab and tab.slots[slotIdx]
+    editingSlotData = { tabIndex = tabIdx, slotIndex = slotIdx }
+
+    ModalTitle.Text = slotIdx and "✏  Edit Slot" or "✦  New Slot"
+    ModalNameBox.Text = slot and slot.name or ("Slot " .. ((#tab.slots) + 1))
+    ModalContentBox.Text = slot and slot.content or ""
+    ModalCharCount.Text = string.len(ModalContentBox.Text) .. " chars"
+
+    Overlay.Visible = true
+    Overlay.BackgroundTransparency = 0.6
+    Modal.Visible = true
+    Modal.Size = UDim2.new(0, 420, 0, 0)
+    Tween(Modal, { Size = UDim2.new(0, 420, 0, 320) }, 0.25)
+    task.defer(function() ModalContentBox:CaptureFocus() end)
+end
+
+local function CloseModal()
+    Tween(Modal, { Size = UDim2.new(0, 420, 0, 0) }, 0.2)
+    task.delay(0.22, function()
+        Modal.Visible = false
+        Overlay.Visible = false
+        editingSlotData = nil
+    end)
+end
+
+local function RenderSlots()
+    -- Clear existing
+    for _, f in ipairs(slotFrames) do f:Destroy() end
+    slotFrames = {}
+
+    local tab = GetCurrentTab()
+    if not tab then return end
+
+    local sorted = GetSortedSlots(tab)
+    SlotCountLabel.Text = #tab.slots .. " / 1000 slots"
+
+    for order, entry in ipairs(sorted) do
+        local i = entry.index
+        local slot = entry.slot
+
+        local slotH = 62
+        local slotFrame = Create("Frame", {
+            Name = "Slot_"..i,
+            Size = UDim2.new(1, -4, 0, slotH),
+            BackgroundColor3 = slot.favorite and C(255, 248, 200) or PALETTE.slot,
+            BorderSizePixel = 0,
+            LayoutOrder = order,
+            ZIndex = 12,
+            Parent = SlotsScroll,
+        })
+        RoundCorner(slotFrame, 10)
+
+        -- Left accent bar
+        local accentBar = Create("Frame", {
+            Size = UDim2.new(0, 4, 1, -12),
+            Position = UDim2.new(0, 0, 0, 6),
+            BackgroundColor3 = slot.favorite and PALETTE.fav or PALETTE.accent,
+            BorderSizePixel = 0,
+            ZIndex = 13,
+            Parent = slotFrame,
+        })
+        RoundCorner(accentBar, 2)
+
+        -- Slot name
+        local nameLabel = Create("TextLabel", {
+            Text = (slot.locked and "🔒 " or "") .. (slot.favorite and "⭐ " or "") .. slot.name,
+            Font = Enum.Font.GothamBold,
+            TextSize = 13,
+            TextColor3 = PALETTE.text,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 14, 0, 8),
+            Size = UDim2.new(0.7, -14, 0, 18),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 13,
+            Parent = slotFrame,
+        })
+        nameLabel.TextSize = S.fontSize
+
+        -- Slot preview
+        local previewLabel = Create("TextLabel", {
+            Text = slot.content == "" and "(empty)" or slot.content,
+            Font = Enum.Font.Gotham,
+            TextSize = 11,
+            TextColor3 = slot.content == "" and PALETTE.textLight or PALETTE.text,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 14, 0, 30),
+            Size = UDim2.new(1, -90, 0, 18),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 13,
+            Parent = slotFrame,
+        })
+
+        -- Copy button
+        local copyBtn = Create("TextButton", {
+            Text = "📋",
+            Font = Enum.Font.GothamBold, TextSize = 14,
+            TextColor3 = PALETTE.textLight, BackgroundColor3 = PALETTE.panel,
+            Size = UDim2.new(0, 30, 0, 30),
+            Position = UDim2.new(1, -98, 0.5, -15),
+            ZIndex = 14, Parent = slotFrame,
+        })
+        RoundCorner(copyBtn, 7)
+
+        -- Edit button
+        local editBtn = Create("TextButton", {
+            Text = "✏",
+            Font = Enum.Font.GothamBold, TextSize = 14,
+            TextColor3 = PALETTE.text, BackgroundColor3 = PALETTE.accent,
+            Size = UDim2.new(0, 30, 0, 30),
+            Position = UDim2.new(1, -62, 0.5, -15),
+            ZIndex = 14, Parent = slotFrame,
+        })
+        RoundCorner(editBtn, 7)
+
+        -- Delete button
+        local delBtn = Create("TextButton", {
+            Text = "✕",
+            Font = Enum.Font.GothamBold, TextSize = 12,
+            TextColor3 = PALETTE.white, BackgroundColor3 = PALETTE.danger,
+            Size = UDim2.new(0, 26, 0, 26),
+            Position = UDim2.new(1, -30, 0.5, -13),
+            ZIndex = 14, Parent = slotFrame,
+        })
+        RoundCorner(delBtn, 7)
+
+        -- Hover effects
+        slotFrame.MouseEnter:Connect(function()
+            Tween(slotFrame, { BackgroundColor3 = PALETTE.slotHover }, 0.12)
+        end)
+        slotFrame.MouseLeave:Connect(function()
+            Tween(slotFrame, { BackgroundColor3 = slot.favorite and C(255,248,200) or PALETTE.slot }, 0.12)
+        end)
+
+        -- Copy
+        copyBtn.MouseButton1Click:Connect(function()
+            if setclipboard then
+                setclipboard(slot.content)
+                ShowToast("📋 Copied to clipboard!", PALETTE.success)
+            else
+                ShowToast("⚠ setclipboard not available", PALETTE.danger)
+            end
+        end)
+
+        -- Edit
+        editBtn.MouseButton1Click:Connect(function()
+            if slot.locked then
+                ShowToast("🔒 This slot is locked!", PALETTE.lock)
+                return
+            end
+            OpenEditModal(ClipboardData.activeTabIndex, i)
+        end)
+
+        -- Delete
+        delBtn.MouseButton1Click:Connect(function()
+            if slot.locked then
+                ShowToast("🔒 Slot is locked!", PALETTE.lock)
+                return
+            end
+            table.remove(ClipboardData.tabs[ClipboardData.activeTabIndex].slots, i)
+            SaveData()
+            RenderSlots()
+            ShowToast("🗑 Slot deleted!")
+        end)
+
+        -- Right click context menu
+        slotFrame.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+                local mp = UserInputService:GetMouseLocation()
+                ShowContext(mp, {
+                    { icon="✏️", label="Edit", action=function()
+                        if slot.locked then ShowToast("🔒 Slot is locked!", PALETTE.lock) return end
+                        OpenEditModal(ClipboardData.activeTabIndex, i)
+                    end},
+                    { icon="📋", label="Copy Content", action=function()
+                        if setclipboard then setclipboard(slot.content) ShowToast("📋 Copied!",PALETTE.success) end
+                    end},
+                    { icon=slot.favorite and "⭐" or "☆", label=slot.favorite and "Unfavorite" or "Favorite", action=function()
+                        slot.favorite = not slot.favorite
+                        SaveData(); RenderSlots()
+                        ShowToast(slot.favorite and "⭐ Added to favorites!" or "☆ Removed from favorites!")
+                    end},
+                    { icon=slot.locked and "🔓" or "🔒", label=slot.locked and "Unlock" or "Lock", action=function()
+                        slot.locked = not slot.locked
+                        SaveData(); RenderSlots()
+                        ShowToast(slot.locked and "🔒 Slot locked!" or "🔓 Slot unlocked!")
+                    end},
+                    { icon="📄", label="Duplicate", action=function()
+                        local tab2 = ClipboardData.tabs[ClipboardData.activeTabIndex]
+                        if #tab2.slots >= 1000 then ShowToast("⚠ 1000 slot limit reached!", PALETTE.danger) return end
+                        local dup = { name=slot.name.." (copy)", content=slot.content, locked=false, favorite=false, created=os.time() }
+                        table.insert(tab2.slots, i+1, dup)
+                        SaveData(); RenderSlots()
+                        ShowToast("📄 Slot duplicated!")
+                    end},
+                    { icon="🔤", label="Rename", action=function()
+                        ShowNameDialog("Rename Slot", "New name...", slot.name, function(newName)
+                            slot.name = newName
+                            SaveData(); RenderSlots()
+                            ShowToast("✏ Slot renamed!")
+                        end)
+                    end},
+                    { icon="🗑", label="Delete", color=PALETTE.danger, action=function()
+                        if slot.locked then ShowToast("🔒 Slot is locked!", PALETTE.lock) return end
+                        table.remove(ClipboardData.tabs[ClipboardData.activeTabIndex].slots, i)
+                        SaveData(); RenderSlots()
+                        ShowToast("🗑 Slot deleted!")
+                    end},
+                })
+            end
+        end)
+
+        table.insert(slotFrames, slotFrame)
+    end
+
+    -- Update scroll canvas
+    task.defer(function()
+        local h = SlotsLayout.AbsoluteContentSize.Y
+        SlotsScroll.CanvasSize = UDim2.new(0, 0, 0, h + 8)
+    end)
+end
+
+-- ╔══════════════════════════════════╗
+-- ║       MODAL INTERACTIONS         ║
+-- ╚══════════════════════════════════╝
+
+ModalContentBox:GetPropertyChangedSignal("Text"):Connect(function()
+    ModalCharCount.Text = string.len(ModalContentBox.Text) .. " chars"
+end)
+
+ModalSaveBtn.MouseButton1Click:Connect(function()
+    local name = ModalNameBox.Text
+    local content = ModalContentBox.Text
+    if name == "" then name = "Slot" end
+
+    if editingSlotData then
+        local ti = editingSlotData.tabIndex
+        local si = editingSlotData.slotIndex
+        local tab = ClipboardData.tabs[ti]
+        if si then
+            -- Edit existing
+            tab.slots[si].name = name
+            tab.slots[si].content = content
+        else
+            -- New slot
+            if #tab.slots >= 1000 then
+                ShowToast("⚠ 1000 slot limit reached!", PALETTE.danger)
+                CloseModal()
+                return
+            end
+            table.insert(tab.slots, {
+                name = name, content = content,
+                locked = false, favorite = false, created = os.time()
+            })
+        end
+        SaveData()
+        RenderSlots()
+        ShowToast("💾 Slot saved!", PALETTE.success)
+    end
+    CloseModal()
+end)
+
+ModalCloseBtn.MouseButton1Click:Connect(CloseModal)
+ModalCancelBtn.MouseButton1Click:Connect(CloseModal)
+Overlay.MouseButton1Click:Connect(CloseModal)
+
+-- ╔══════════════════════════════════╗
+-- ║       BOTTOM BAR ACTIONS         ║
+-- ╚══════════════════════════════════╝
+
+AddSlotBtn.MouseButton1Click:Connect(function()
+    local tab = GetCurrentTab()
+    if not tab then return end
+    if #tab.slots >= 1000 then
+        ShowToast("⚠ 1000 slot limit reached!", PALETTE.danger)
+        return
+    end
+    editingSlotData = { tabIndex = ClipboardData.activeTabIndex, slotIndex = nil }
+    OpenEditModal(ClipboardData.activeTabIndex, nil)
+end)
+
+AddTabBtn.MouseButton1Click:Connect(function()
+    ShowNameDialog("New Tab", "Tab name...", "Tab " .. (#ClipboardData.tabs + 1), function(name)
+        table.insert(ClipboardData.tabs, { name = name, slots = {} })
+        ClipboardData.activeTabIndex = #ClipboardData.tabs
+        RenderTabs()
+        RenderSlots()
+        SaveData()
+        ShowToast("✦ Tab created!")
+    end)
+end)
+
+-- ╔══════════════════════════════════╗
+-- ║       SEARCH                     ║
+-- ╚══════════════════════════════════╝
+
+SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    searchQuery = SearchBox.Text
+    RenderSlots()
+end)
+
+-- ╔══════════════════════════════════╗
+-- ║       SORT                       ║
+-- ╚══════════════════════════════════╝
+
+local sortModes = { "Date", "A-Z", "Favorites" }
+local sortIdx = 1
+for i, m in ipairs(sortModes) do if m == S.sortMode then sortIdx = i end end
+
+SortLabel.MouseButton1Click:Connect(function()
+    sortIdx = sortIdx % #sortModes + 1
+    S.sortMode = sortModes[sortIdx]
+    SortLabel.Text = "Sort: " .. S.sortMode .. " ▾"
+    SaveData()
+    RenderSlots()
+end)
+
+-- ╔══════════════════════════════════╗
+-- ║       CLOSE / SHOW UI            ║
+-- ╚══════════════════════════════════╝
+
+CloseBtn.MouseButton1Click:Connect(function()
+    Tween(MainFrame, { Position = UDim2.new(MainFrame.Position.X.Scale, MainFrame.Position.X.Offset, MainFrame.Position.Y.Scale, MainFrame.Position.Y.Offset - 20), BackgroundTransparency = 1 }, 0.22)
+    task.delay(0.25, function()
+        MainFrame.Visible = false
+        MainFrame.BackgroundTransparency = 0
+        HButton.Visible = true
+        Tween(HButton, { Size = UDim2.new(0, 52, 0, 52) }, 0.25)
+    end)
+end)
+
+HButton.MouseButton1Click:Connect(function()
+    HButton.Visible = false
+    MainFrame.Visible = true
+    MainFrame.BackgroundTransparency = 1
+    Tween(MainFrame, { BackgroundTransparency = 0 }, 0.25)
+end)
+
+-- ╔══════════════════════════════════╗
+-- ║       SETTINGS INTERACTIONS      ║
+-- ╚══════════════════════════════════╝
+
+SettingsBtn.MouseButton1Click:Connect(function()
+    SettingsPanel.Visible = true
+    SettingsPanel.Size = UDim2.new(0, 400, 0, 0)
+    Tween(SettingsPanel, { Size = UDim2.new(0, 400, 0, 520) }, 0.28)
+    UpdateSettingsCanvas()
+end)
+
+SettingsCloseBtn.MouseButton1Click:Connect(function()
+    Tween(SettingsPanel, { Size = UDim2.new(0, 400, 0, 0) }, 0.22)
+    task.delay(0.25, function() SettingsPanel.Visible = false end)
+end)
+
+-- Auto load toggle
+AutoLoadToggle.MouseButton1Click:Connect(function()
+    S.autoLoad = not S.autoLoad
+    AutoLoadToggle.Text = S.autoLoad and "ON" or "OFF"
+    Tween(AutoLoadToggle, { BackgroundColor3 = S.autoLoad and PALETTE.success or C(200,200,200) }, 0.2)
+    SaveData()
+    ShowToast(S.autoLoad and "🔄 Auto Load enabled!" or "⏸ Auto Load disabled!")
+end)
+
+-- Font size buttons
+local function UpdateFontBtns(active)
+    FontSmall.BackgroundColor3 = active == 12 and PALETTE.accent or PALETTE.tabBg
+    FontMed.BackgroundColor3 = active == 14 and PALETTE.accent or PALETTE.tabBg
+    FontLarge.BackgroundColor3 = active == 16 and PALETTE.accent or PALETTE.tabBg
+end
+
+FontSmall.MouseButton1Click:Connect(function() S.fontSize=12; UpdateFontBtns(12); SaveData(); RenderSlots() end)
+FontMed.MouseButton1Click:Connect(function() S.fontSize=14; UpdateFontBtns(14); SaveData(); RenderSlots() end)
+FontLarge.MouseButton1Click:Connect(function() S.fontSize=16; UpdateFontBtns(16); SaveData(); RenderSlots() end)
+
+-- Export all
+ExportBtn.MouseButton1Click:Connect(function()
+    local lines = {}
+    for _, tab in ipairs(ClipboardData.tabs) do
+        table.insert(lines, "=== "..tab.name.." ===")
+        for _, slot in ipairs(tab.slots) do
+            table.insert(lines, "["..slot.name.."]\n"..slot.content)
+        end
+    end
+    local full = table.concat(lines, "\n\n")
+    if setclipboard then
+        setclipboard(full)
+        ShowToast("📤 Exported to clipboard!", PALETTE.success)
+    end
+    if writefile then
+        pcall(function() writefile("MIH_Clipboard_Export.txt", full) end)
+        ShowToast("📤 Exported! (MIH_Clipboard_Export.txt)", PALETTE.success)
+    end
+end)
+
+-- Clear all
+ClearAllBtn.MouseButton1Click:Connect(function()
+    ShowNameDialog("⚠ Confirm Clear All", "Type 'DELETE' to confirm...", "", function(val)
+        if val == "DELETE" then
+            ClipboardData.tabs = {{ name = "General", slots = {} }}
+            ClipboardData.activeTabIndex = 1
+            SaveData()
+            RenderTabs()
+            RenderSlots()
+            ShowToast("🗑 All data cleared!", PALETTE.danger)
+        else
+            ShowToast("⚠ Type DELETE to confirm", PALETTE.danger)
+        end
+    end)
+end)
+
+-- ╔══════════════════════════════════╗
+-- ║       COLOR PICKER LOGIC         ║
+-- ╚══════════════════════════════════╝
+
+local function OpenColorPicker(colorKey, swatch)
+    cpCurrentKey = colorKey
+    local c = S[colorKey]
+    cpCurrentR = math.floor(c.R * 255)
+    cpCurrentG = math.floor(c.G * 255)
+    cpCurrentB = math.floor(c.B * 255)
+    cpInputs[1].Text = tostring(cpCurrentR)
+    cpInputs[2].Text = tostring(cpCurrentG)
+    cpInputs[3].Text = tostring(cpCurrentB)
+    CPPreview.BackgroundColor3 = c
+    CPLabel.Text = "R: "..cpCurrentR.."  G: "..cpCurrentG.."  B: "..cpCurrentB
+    ColorPicker.Visible = true
+end
+
+for i, inp in ipairs(cpInputs) do
+    inp:GetPropertyChangedSignal("Text"):Connect(function()
+        local v = tonumber(inp.Text) or 0
+        v = math.clamp(v, 0, 255)
+        if i==1 then cpCurrentR=v elseif i==2 then cpCurrentG=v else cpCurrentB=v end
+        local newColor = Color3.fromRGB(cpCurrentR, cpCurrentG, cpCurrentB)
+        CPPreview.BackgroundColor3 = newColor
+        CPLabel.Text = "R: "..cpCurrentR.."  G: "..cpCurrentG.."  B: "..cpCurrentB
+    end)
+end
+
+CPApplyBtn.MouseButton1Click:Connect(function()
+    if not cpCurrentKey then return end
+    local newColor = Color3.fromRGB(cpCurrentR, cpCurrentG, cpCurrentB)
+    S[cpCurrentKey] = newColor
+    -- Update swatches
+    if cpCurrentKey == "accentColor" then accentSwatch.BackgroundColor3 = newColor
+    elseif cpCurrentKey == "bgColor" then bgSwatch.BackgroundColor3 = newColor
+    elseif cpCurrentKey == "textColor" then textSwatch.BackgroundColor3 = newColor end
+    -- Apply to UI
+    MainFrame.BackgroundColor3 = S.bgColor
+    Header.BackgroundColor3 = S.bgColor
+    BottomBar.BackgroundColor3 = S.bgColor
+    SaveData()
+    ShowToast("🎨 Color updated!")
+    ColorPicker.Visible = false
+end)
+
+CPCloseBtn.MouseButton1Click:Connect(function() ColorPicker.Visible = false end)
+
+accentRow.MouseButton1Click = nil
+accentSwatch.InputBegan:Connect(function(inp) if inp.UserInputType==Enum.UserInputType.MouseButton1 then OpenColorPicker("accentColor", accentSwatch) end end)
+bgSwatch.InputBegan:Connect(function(inp) if inp.UserInputType==Enum.UserInputType.MouseButton1 then OpenColorPicker("bgColor", bgSwatch) end end)
+textSwatch.InputBegan:Connect(function(inp) if inp.UserInputType==Enum.UserInputType.MouseButton1 then OpenColorPicker("textColor", textSwatch) end end)
+
+-- Presets
+for _, pb in ipairs(presetButtons) do
+    pb.btn.MouseButton1Click:Connect(function()
+        S.accentColor = pb.data.accent
+        S.bgColor = pb.data.bg
+        S.textColor = pb.data.text
+        accentSwatch.BackgroundColor3 = pb.data.accent
+        bgSwatch.BackgroundColor3 = pb.data.bg
+        textSwatch.BackgroundColor3 = pb.data.text
+        MainFrame.BackgroundColor3 = S.bgColor
+        Header.BackgroundColor3 = S.bgColor
+        BottomBar.BackgroundColor3 = S.bgColor
+        HButton.BackgroundColor3 = S.accentColor
+        AddSlotBtn.BackgroundColor3 = S.accentColor
+        SaveData()
+        ShowToast("🌈 Theme applied!")
+        RenderSlots()
+    end)
+end
+
+-- ╔══════════════════════════════════╗
+-- ║       HOVER EFFECTS (BUTTONS)    ║
+-- ╚══════════════════════════════════╝
+
+local function HoverBtn(btn, normal, hover)
+    btn.MouseEnter:Connect(function() Tween(btn, {BackgroundColor3=hover},0.15) end)
+    btn.MouseLeave:Connect(function() Tween(btn, {BackgroundColor3=normal},0.15) end)
+end
+
+HoverBtn(AddSlotBtn, PALETTE.accent, PALETTE.accent2)
+HoverBtn(AddTabBtn, PALETTE.tabBg, PALETTE.tabActive)
+HoverBtn(SettingsBtn, PALETTE.accent, PALETTE.accent2)
+HoverBtn(CloseBtn, PALETTE.danger, C(255,100,100))
+
+-- ╔══════════════════════════════════╗
+-- ║       AUTO LOAD SYSTEM           ║
+-- ╚══════════════════════════════════╝
+
+if S.autoLoad then
+    MainFrame.Visible = true
+else
+    MainFrame.Visible = false
+    HButton.Visible = true
+end
+
+-- ╔══════════════════════════════════╗
+-- ║       INITIAL RENDER             ║
+-- ╚══════════════════════════════════╝
+
+RenderTabs()
+RenderSlots()
+
+-- ╔══════════════════════════════════╗
+-- ║       KEYBIND: CTRL+SHIFT+C      ║
+-- ╚══════════════════════════════════╝
+
+UserInputService.InputBegan:Connect(function(inp, gp)
+    if gp then return end
+    if inp.KeyCode == Enum.KeyCode.C
+        and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+        and UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+    then
+        if MainFrame.Visible then
+            Tween(MainFrame, {BackgroundTransparency=1}, 0.2)
+            task.delay(0.22, function()
+                MainFrame.Visible = false
+                MainFrame.BackgroundTransparency = 0
+                HButton.Visible = true
+            end)
+        else
+            HButton.Visible = false
+            MainFrame.Visible = true
+            MainFrame.BackgroundTransparency = 1
+            Tween(MainFrame, {BackgroundTransparency=0}, 0.22)
+        end
+    end
+end)
+
+-- ╔══════════════════════════════════╗
+-- ║        STARTUP TOAST             ║
+-- ╚══════════════════════════════════╝
+
+task.delay(0.8, function()
+    ShowToast("✦ MadeInHeaven's Clipboard loaded!", PALETTE.accent)
+end)
+
+task.delay(1.5, function()
+    ShowToast("💡 Tip: Right-click slots for more options!", PALETTE.panel)
+end)
+
+print("╔═══════════════════════════════════════╗")
+print("║  MadeInHeaven's Clipboard v1.0        ║")
+print("║  Ctrl+Shift+C to toggle UI            ║")
+print("║  Right-click slots for options        ║")
+print("╚═══════════════════════════════════════╝")
